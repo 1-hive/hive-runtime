@@ -2,7 +2,7 @@
 # Wait until a task needs the chief of staff, then print why and exit.
 # Minimal stand-in for the Phase E supervisor's detection side.
 #
-#   watch-task.sh <task-id> [claude-session-id] [max-hours]
+#   watch-task.sh <task-id> [claude-session-id | pid:<pid>] [max-hours]
 #
 # Exits on: task.blocked, task.result_posted, task.released, review.recorded,
 # a gateway refusal of anyone on this task, the owner silent for longer than
@@ -37,7 +37,9 @@ if every and last and t.get("status") in ("assigned", "in_progress"):
     if age > every + 600: print(f"owner silent {int(age/60)} min (check-in every {every//60} min)")
 ')
   [ -n "$stale" ] && { echo "STALE: $stale"; exit 0; }
-  if [ -n "$SESSION" ]; then
+  if [ "${SESSION#pid:}" != "$SESSION" ]; then
+    kill -0 "${SESSION#pid:}" 2>/dev/null || { echo "PROCESS GONE: $SESSION"; exit 0; }
+  elif [ -n "$SESSION" ]; then
     st=$(claude agents --json 2>/dev/null | python3 -c '
 import json, sys
 d = json.load(sys.stdin); d = d if isinstance(d, list) else d.get("agents", d)
