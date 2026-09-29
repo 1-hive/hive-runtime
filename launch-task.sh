@@ -54,12 +54,12 @@ cd "$DIR"
 if [ "$ROLE" = worker ]; then
   # Print mode, not --bg: nothing can wait on a permission prompt overnight.
   # A refused action is returned to the agent, which takes another route.
-  n=$(ls worker*.jsonl 2>/dev/null | wc -l)
+  n=$( (ls worker*.jsonl 2>/dev/null || true) | wc -l)
   nohup claude -p --permission-mode auto --output-format stream-json --verbose \
     "$(cat KICKOFF.md)" > "$DIR/worker-$n.jsonl" 2> "$DIR/worker-$n.err" &
   echo "pid:$! log $DIR/worker-$n.jsonl"
 else
-  n=$(ls codex*.log 2>/dev/null | wc -l)
+  n=$( (ls codex*.log 2>/dev/null || true) | wc -l)
   nohup timeout --kill-after=30s 90m codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" \
     --add-dir /home/omegahive/repos/hive-workspace.git --output-last-message "$DIR/codex-last-message.md" \
     - < KICKOFF.md > "$DIR/codex-$n.log" 2>&1 &
