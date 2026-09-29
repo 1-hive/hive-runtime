@@ -5,7 +5,7 @@
 #   launch-task.sh worker   <task-id> <actor-id> <kickoff-file> [base-branch]
 #   launch-task.sh reviewer <task-id> <actor-id> <kickoff-file>
 #
-# worker:   Claude Code (--bg, auto permission mode) in ~/work/1hive/<task-id>,
+# worker:   Claude Code (print mode, auto permissions) in ~/work/1hive/<task-id>,
 #           mtg-player on a new branch hive/<task-id> from base-branch (default main).
 #           Re-running for an existing folder relaunches in it (a restart).
 # reviewer: Codex (exec) in ~/work/1hive/<task-id>-review, mtg-player on hive/<task-id>.
@@ -52,7 +52,12 @@ git -C "$DIR/workspace" pull -q --ff-only || true
 
 cd "$DIR"
 if [ "$ROLE" = worker ]; then
-  claude --bg --permission-mode auto "$(cat KICKOFF.md)" | grep -o 'claude stop [0-9a-f]*' | awk '{print "session", $3}'
+  # Print mode, not --bg: nothing can wait on a permission prompt overnight.
+  # A refused action is returned to the agent, which takes another route.
+  n=$(ls worker*.jsonl 2>/dev/null | wc -l)
+  nohup claude -p --permission-mode auto --output-format stream-json --verbose \
+    "$(cat KICKOFF.md)" > "$DIR/worker-$n.jsonl" 2> "$DIR/worker-$n.err" &
+  echo "pid:$! log $DIR/worker-$n.jsonl"
 else
   n=$(ls codex*.log 2>/dev/null | wc -l)
   nohup timeout --kill-after=30s 90m codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" \
