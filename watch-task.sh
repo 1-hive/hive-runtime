@@ -41,7 +41,7 @@ if every and last and t.get("status") in ("assigned", "in_progress"):
     st=$(claude agents --json 2>/dev/null | python3 -c '
 import json, sys
 d = json.load(sys.stdin); d = d if isinstance(d, list) else d.get("agents", d)
-print(next((f"{a.get(\"status\")}/{a.get(\"state\")}" for a in d if a.get("id") == sys.argv[1]), "gone"))' "$SESSION")
+print(next((str(a.get("status")) + "/" + str(a.get("state")) for a in d if a.get("id") == sys.argv[1]), "gone"))' "$SESSION")
     [ "$st" = gone ] && { echo "SESSION GONE: $SESSION"; exit 0; }
   fi
   sleep 60
