@@ -109,7 +109,17 @@ REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND"
 # The task's text for the scorer: the kickoff and the order files it names.
 { cat KICKOFF.md; for f in $(grep -o "$DIR/workspace/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u); do
     [ -f "$f" ] && { echo; echo "--- $f"; cat "$f"; }; done; } > route-task.md
-DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log "$RLOG" --task-text route-task.md) || {
+RC=0; DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log "$RLOG" --task-text route-task.md) || RC=$?
+# Summaries of new log entries go to the record (amendment A1) as the router's actor, in the
+# background, once that actor is registered; output in $ROOT/route-record.log.
+RKEY=$HOME/.config/hive/agents/router.key
+if [ -f "$RKEY" ] && HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$RKEY hive actors 2>/dev/null \
+    | jq -e 'any(.[]; .id == "router")' >/dev/null 2>&1; then
+  ( HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$RKEY HIVE_VIA=hive-route:router \
+      nohup uv run -q --frozen --project /home/omegahive/repos/hive-route hive-route record "$RLOG" \
+      >> "$ROOT/route-record.log" 2>&1 & )
+fi
+[ "$RC" -eq 0 ] || {
   echo "router: no route for this attempt" >&2
   printf '%s\n' "$DEC" | jq -c '{decision, wait_until, reasons: [.reasons[] | .rule + ": " + .note], rejected}' >&2
   exit 3; }
