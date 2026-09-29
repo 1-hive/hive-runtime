@@ -36,7 +36,7 @@ lease = (t.get("ext") or {}).get("lease") or {}
 every = lease.get("checkin_every_seconds")
 last = (t.get("last_activity") or {}).get("at") or t.get("assigned_at")
 if every and last and t.get("status") in ("assigned", "in_progress"):
-    last_t = max(datetime.datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp(), float(sys.argv[2]))
+    last_t = max(datetime.datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp(), float(sys.argv[1]))
     age = datetime.datetime.now(datetime.timezone.utc).timestamp() - last_t
     if age > every + 600: print(f"owner silent {int(age/60)} min (check-in every {every//60} min)")
 ' "$WATCH_START")
