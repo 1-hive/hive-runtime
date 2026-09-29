@@ -106,7 +106,10 @@ REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND"
   '{task: $t, attempt: $a, reason: $r, facts: ({kind: $k} + $facts), tools_needed: true}
    + (if $hint then {hint: $hint} else {} end) + (if $author then {author: $author} else {} end)
    + (if ($history | length) > 0 then {history: $history} else {} end)')
-DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log "$RLOG") || {
+# The task's text for the scorer: the kickoff and the order files it names.
+{ cat KICKOFF.md; for f in $(grep -o "$DIR/workspace/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u); do
+    [ -f "$f" ] && { echo; echo "--- $f"; cat "$f"; }; done; } > route-task.md
+DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log "$RLOG" --task-text route-task.md) || {
   echo "router: no route for this attempt" >&2
   printf '%s\n' "$DEC" | jq -c '{decision, wait_until, reasons: [.reasons[] | .rule + ": " + .note], rejected}' >&2
   exit 3; }
