@@ -15,6 +15,10 @@ Every agent working a task in 1-hive (worker or reviewer) follows this. The proj
 - Code changes go on the branch `hive/<task-id>`, pushed to the local remote. Never push to `main`: merging is decided after review.
 - Commit and push before you refer to anything. The record holds pins, not content: `hive-pin mint <repo> <path> --commit <sha>`, using the registry in your task directory.
 
+## Running mode
+
+Workers run non-interactively: **your session ends the moment you stop to wait.** Never end a turn to wait for a background job, a monitor or a notification. Anything you start in the background is killed when you stop. Run long work in the foreground, in pieces that fit a command's time limit (up to 10 minutes each), and keep going until you've posted a result or a block. Before you finish, stop anything you started (containers, games).
+
 ## Lifecycle
 
 1. **Accept:** `hive emit task.accepted --task <id>`, once you have read the order and this contract.
