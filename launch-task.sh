@@ -61,6 +61,7 @@ fi
 # Ask the router which model runs this attempt (hive-route; table deploy/route-table.yaml).
 # Every decision is appended to $ROOT/route-log.jsonl, which starts in fixed mode.
 TABLE=/home/omegahive/repos/1-hive/deploy/route-table.yaml
+SOURCES=/home/omegahive/repos/1-hive/deploy/route-sources.yaml  # pool usage: a limited pool waits
 RLOG=$ROOT/route-log.jsonl
 hr() { uv run -q --frozen --project /home/omegahive/repos/hive-route hive-route "$@"; }
 [ -f "$RLOG" ] || hr mode fixed "$TABLE" --log "$RLOG" >/dev/null
@@ -78,7 +79,7 @@ else
   REQ=$(jq -n --arg t "$TASK" --arg a "$TASK.review.$n" --arg r "$REASON" --arg f "$FAMILY" \
     '{task: $t, attempt: $a, reason: $r, facts: {kind: "review"}, author: {family: $f}, tools_needed: true}')
 fi
-DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --log "$RLOG") || {
+DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log "$RLOG") || {
   echo "router: no route for this attempt" >&2; printf '%s\n' "$DEC" | jq -c '{decision, wait_until, rejected}' >&2; exit 3; }
 MODEL=$(jq -r .model <<<"$DEC") EFFORT=$(jq -r '.effort // empty' <<<"$DEC")
 [ "$(jq -r .harness <<<"$DEC")" = "$HARNESS" ] || { echo "router chose harness $(jq -r .harness <<<"$DEC"), launcher runs $HARNESS" >&2; exit 3; }
