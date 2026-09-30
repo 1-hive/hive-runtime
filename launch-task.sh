@@ -129,6 +129,21 @@ HARNESS=$(jq -r .harness <<<"$DEC") MODEL=$(jq -r .model <<<"$DEC") EFFORT=$(jq 
 echo "route: $(jq -r '"\(.route_id) (\(.model)\(if .effort then ", " + .effort else "" end)), tier \(.tier), mode \(.mode)"' <<<"$DEC")"
 jq -c '{attempt, route_id, tier, pool}' <<<"$DEC" >> "$HIST"
 
+# The record's SPEC §6.2: an actor re-declares when its configuration changes. When the
+# router picks a different harness or model than the actor's current declaration, the
+# launcher re-declares it, signed with the actor's own key, before the attempt starts.
+ROUTE_DESC=$(jq -r '"\(.route_id): \(.model)\(if .effort then " (" + .effort + ")" else "" end)"' <<<"$DEC")
+CUR=$(HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY hive actors 2>/dev/null \
+  | jq -c --arg a "$ACTOR" '.[] | select(.id == $a) | .declaration' 2>/dev/null || true)
+if [ -n "$CUR" ] && [ "$(jq -r '.harness + "|" + .model_route' <<<"$CUR")" != "$HARNESS|$ROUTE_DESC" ]; then
+  NEWDECL=$(jq -c --arg a "$ACTOR" --arg h "$HARNESS" --arg m "$ROUTE_DESC" \
+    '{actor_id: $a, declaration: (. + {harness: $h, model_route: $m})}' <<<"$CUR")
+  HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY HIVE_VIA=launcher:$ACTOR \
+    hive emit actor.declared --data "$NEWDECL" >/dev/null 2>&1 \
+    && echo "declared: $ACTOR now $HARNESS, $ROUTE_DESC" \
+    || echo "warning: couldn't re-declare $ACTOR as $HARNESS, $ROUTE_DESC" >&2
+fi
+
 # Output names: worker-<n>.jsonl for Claude workers and codex-<n>.log for Codex reviewers,
 # as before routing; otherwise <role>-<n>.<jsonl|log>.
 case "$ROLE:$HARNESS" in
