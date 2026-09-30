@@ -37,7 +37,9 @@ if [ ! -d "$DIR" ]; then
     git clone -q -b "$BASE" /home/omegahive/repos/mtg-player.git "$DIR/mtg-player"
     git -C "$DIR/mtg-player" checkout -q -b "hive/$TASK"
   else
-    git clone -q -b "hive/$TASK" /home/omegahive/repos/mtg-player.git "$DIR/mtg-player"
+    # The task's code may live in another repo (e.g. the arena); then review mtg-player main.
+    git clone -q -b "hive/$TASK" /home/omegahive/repos/mtg-player.git "$DIR/mtg-player" 2>/dev/null \
+      || git clone -q /home/omegahive/repos/mtg-player.git "$DIR/mtg-player"
   fi
   if [ -d "$SEED_BUILD" ]; then
     cp -a "$SEED_BUILD" "$DIR/mtg-player/adapters/xmage-external-seat/.build"
