@@ -156,9 +156,12 @@ if [ "$(jq -r '.via_gateway // false' <<<"$DEC")" = true ]; then
   HIVE_GATEWAY_KEY=$(sed -n 's/^HIVE_GATEWAY_KEY=//p' "$HOME/.config/hive/gateway.env")
   MODEL=$(jq -r .route_id <<<"$DEC")
   case "$HARNESS" in
-    claude-code) GWENV=(ANTHROPIC_BASE_URL="$GWURL" ANTHROPIC_AUTH_TOKEN="$HIVE_GATEWAY_KEY" ANTHROPIC_API_KEY=) ;;
+    # Spend in the gateway is tagged by task and attempt, as well as by pool, tier and route.
+    claude-code) GWENV=(ANTHROPIC_BASE_URL="$GWURL" ANTHROPIC_AUTH_TOKEN="$HIVE_GATEWAY_KEY" ANTHROPIC_API_KEY=
+                        ANTHROPIC_CUSTOM_HEADERS="x-litellm-tags: task:$TASK,attempt:$ATTEMPT") ;;
     codex) GWENV=(HIVE_GATEWAY_KEY="$HIVE_GATEWAY_KEY")
            GW=(-c 'model_providers.hivegw.name="hive gateway"' -c "model_providers.hivegw.base_url=\"$GWURL/v1\""
+               -c "model_providers.hivegw.http_headers={\"x-litellm-tags\"=\"task:$TASK,attempt:$ATTEMPT\"}"
                -c 'model_providers.hivegw.env_key="HIVE_GATEWAY_KEY"' -c 'model_providers.hivegw.wire_api="responses"'
                -c 'model_provider="hivegw"') ;;
   esac
