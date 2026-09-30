@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# The operator's short commands for 1-hive. Signs with the operator's own key
+# (~/.config/hive/operator.key); never used by agents.
+#
+#   op inbox                    what needs you
+#   op board                    goals and open tasks
+#   op goal <id>                a goal and its history
+#   op approve <goal>           approve a proposed goal
+#   op accept <goal> [note]     accept a completed goal
+#   op reopen <goal> <reason>   send a completed goal back
+#   op abandon <goal> <reason>  abandon a goal
+#   op events [n]               the last n events (default 20), one line each
+set -euo pipefail
+export HIVE_URL=${HIVE_URL:-http://127.0.0.1:8470} HIVE_ID=${HIVE_ID:-1-hive}
+export HIVE_KEY_FILE=${HIVE_KEY_FILE:-$HOME/.config/hive/operator.key} HIVE_VIA=${HIVE_VIA:-op}
+HIVE=${HIVE:-$HOME/.local/bin/hive}
+
+json() { python3 -c 'import json,sys; print(json.dumps(dict(zip(sys.argv[1::2], sys.argv[2::2]))))' "$@"; }
+emit() {  # emit <type> <goal> [data-json]; prints one line, not the whole event
+  local out
+  if out=$("$HIVE" emit "$1" --goal "$2" --data "${3:-{\}}" 2>&1); then
+    python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); print("ok:", e["type"], e.get("goal", ""), "at position", e["position"])' <<<"$out"
+  else
+    echo "refused: $out" >&2; exit 1
+  fi
+}
+need() { [ -n "${2:-}" ] || { echo "usage: op $1" >&2; exit 2; }; }
+
+cmd=${1:-inbox}; shift || true
+case "$cmd" in
+  inbox)   "$HIVE" inbox --for operator ;;
+  board)   "$HIVE" board ;;
+  goal)    need "goal <id>" "${1:-}"; "$HIVE" goal "$1" ;;
+  approve) need "approve <goal>" "${1:-}"; emit goal.approved "$1" ;;
+  accept)  need "accept <goal> [note]" "${1:-}"
+           if [ -n "${2:-}" ]; then emit goal.accepted "$1" "$(json note "$2")"; else emit goal.accepted "$1"; fi ;;
+  reopen)  need "reopen <goal> <reason>" "${2:-}"; emit goal.reopened "$1" "$(json reason "$2")" ;;
+  abandon) need "abandon <goal> <reason>" "${2:-}"; emit goal.abandoned "$1" "$(json reason "$2")" ;;
+  events)  "$HIVE" events 2>/dev/null | tail -n "${1:-20}" | python3 -c '
+import json, sys
+for l in sys.stdin:
+    if not l.strip(): continue
+    e = json.loads(l); d = e.get("data") or {}
+    what = e.get("goal") or e.get("task") or d.get("task") or d.get("actor_id") or ""
+    extra = d.get("kind") or d.get("verdict") or d.get("code") or ""
+    print("%5d %s %-18s %-22s %s %s" % (e["position"], e["recorded_at"][5:16], e["actor"]["id"], e["type"], what, extra))' ;;
+  help|-h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "unknown command: $cmd (try: op help)" >&2; exit 2 ;;
+esac
