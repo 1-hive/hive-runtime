@@ -211,12 +211,14 @@ case "$HARNESS" in
     # A refused action is returned to the agent, which takes another route.
     nohup env "${GWENV[@]}" "${CAP[@]}" claude -p --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} --permission-mode auto \
       --output-format stream-json --verbose "$(cat KICKOFF.md)" > "$OUT" 2> "${OUT%.*}.err" &
+    echo "$!" > "$RS/$PREFIX.$n.pid"   # the supervisor finds the attempt's process here
     echo "pid:$! log $OUT" ;;
   codex)
     nohup env "${GWENV[@]}" "${CAP[@]}" codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" "${GW[@]}" \
       -m "$MODEL" ${EFFORT:+-c model_reasoning_effort="$EFFORT"} \
       --add-dir /home/omegahive/repos/hive-workspace.git --output-last-message "$DIR/codex-last-message.md" \
       - < KICKOFF.md > "$OUT" 2>&1 &
+    echo "$!" > "$RS/$PREFIX.$n.pid"   # the supervisor finds the attempt's process here
     echo "codex pid $! log $OUT" ;;
   *) echo "router chose harness $HARNESS, which this launcher can't start" >&2; exit 3 ;;
 esac
