@@ -24,6 +24,12 @@
 # Claude Code runs in print mode with auto permissions; Codex runs `exec`.
 set -euo pipefail
 ROLE=$1 TASK=$2 ACTOR=$3 KICKOFF=$4 BASE=${5:-main}
+# Ids go into paths, a Codex config override and an HTTP header: only the record's id syntax.
+ID='^[a-z0-9][a-z0-9._-]{0,63}$'
+[[ "$TASK" =~ $ID && "$ACTOR" =~ $ID && "$TASK" != *..* && "$ACTOR" != *..* ]] \
+  || { echo "task and actor ids must match $ID" >&2; exit 2; }
+case "$ROLE" in worker|reviewer) ;; *) echo "role must be worker or reviewer" >&2; exit 2 ;; esac
+[[ "$BASE" =~ ^[A-Za-z0-9._/-]+$ && "$BASE" != -* ]] || { echo "bad base branch" >&2; exit 2; }
 ROOT=$HOME/work/1hive
 DIR=$ROOT/$TASK; [ "$ROLE" = reviewer ] && DIR=$ROOT/$TASK-review
 SEED_BUILD=${SEED_BUILD:-$ROOT/hbp-1-feasibility/mtg-player/adapters/xmage-external-seat/.build}
@@ -61,14 +67,14 @@ cd "$DIR"
 # ---- route: ask the router which harness and model run this attempt ------------------
 # Table deploy/route-table.yaml; pool usage and qualifications from deploy/route-sources.yaml.
 # Every decision goes to $ROOT/route-log.jsonl (created in fixed mode); each attempt gets a
-# manifest (<role>.<n>.attempt.json) so the router can check which model actually ran.
+# manifest ($ROOT/.route/<folder>/<role>.<n>.attempt.json) so the router can check which model ran.
 TABLE=/home/omegahive/repos/1-hive/deploy/route-table.yaml
 SOURCES=/home/omegahive/repos/1-hive/deploy/route-sources.yaml
 RLOG=$ROOT/route-log.jsonl
 hr() { uv run -q --frozen --project /home/omegahive/repos/hive-route hive-route "$@"; }
 [ -f "$RLOG" ] || hr mode fixed "$TABLE" --log "$RLOG" >/dev/null
 # Earlier attempts' reported models against their routes: logs drift, demotes the route.
-hr observe "$RLOG" "$ROOT/*/*.attempt.json" --sources "$SOURCES" >&2 || true
+hr observe "$RLOG" "$ROOT/.route/*/*.attempt.json" --sources "$SOURCES" >&2 || true
 
 # Attempt numbers count this role's earlier outputs, whatever harness wrote them.
 if [ "$ROLE" = worker ]; then KIND=work; PREFIX=worker; OLD="worker-*.jsonl worker-*.log"
@@ -78,7 +84,10 @@ ATTEMPT=$TASK.$PREFIX.$n
 REASON=${ROUTE_REASON:-new}; [ "$n" -gt 0 ] && [ -z "${ROUTE_REASON:-}" ] && REASON=restart
 
 # This role's earlier attempts on the task, with their failure classes where known.
-HIST=$DIR/route-history.jsonl; touch "$HIST"
+# Route state lives outside the agent's folder, so the agent doesn't edit what steers it.
+RS=$ROOT/.route/$(basename "$DIR"); mkdir -p "$RS"
+HIST=$RS/route-history.jsonl
+[ -f "$HIST" ] || { [ -f "$DIR/route-history.jsonl" ] && cp "$DIR/route-history.jsonl" "$HIST"; touch "$HIST"; }
 if [ -n "${ROUTE_LAST_CLASS:-}" ] && [ -s "$HIST" ]; then
   { head -n -1 "$HIST"; tail -n 1 "$HIST" | jq -c --arg c "$ROUTE_LAST_CLASS" '. + {class: $c}'; } > "$HIST.tmp"
   mv "$HIST.tmp" "$HIST"
@@ -115,7 +124,9 @@ RC=0; DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log
 # Summaries of new log entries go to the record (amendment A1) as the router's actor, in the
 # background, once that actor is registered; output in $ROOT/route-record.log.
 RKEY=$HOME/.config/hive/agents/router.key
-if [ -f "$RKEY" ] && HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$RKEY hive actors 2>/dev/null \
+# Only the deployment's own log is ever synced (a copy of this block run on a scratch log once
+# posted test entries to the record).
+if [ "$RLOG" = "$HOME/work/1hive/route-log.jsonl" ] && [ -f "$RKEY" ] && HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$RKEY hive actors 2>/dev/null \
     | jq -e 'any(.[]; .id == "router")' >/dev/null 2>&1; then
   ( HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$RKEY HIVE_VIA=hive-route:router \
       nohup uv run -q --frozen --project /home/omegahive/repos/hive-route hive-route record "$RLOG" \
@@ -164,7 +175,7 @@ case "$ROLE:$HARNESS" in
   *:claude-code)      OUT=$DIR/$PREFIX-$n.jsonl ;;
   *)                  OUT=$DIR/$PREFIX-$n.log ;;
 esac
-printf '%s' "$DEC" | hr manifest - --cwd "$DIR" --output "$OUT" > "$DIR/$PREFIX.$n.attempt.json"
+printf '%s' "$DEC" | hr manifest - --cwd "$DIR" --output "$OUT" > "$RS/$PREFIX.$n.attempt.json"
 
 cat > "$DIR/hive.env" <<EOF
 export HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY HIVE_VIA=$HARNESS:$ACTOR
