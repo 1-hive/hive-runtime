@@ -144,6 +144,18 @@ if [ -n "$CUR" ] && [ "$(jq -r '.harness + "|" + .model_route' <<<"$CUR")" != "$
     || echo "warning: couldn't re-declare $ACTOR as $HARNESS, $ROUTE_DESC" >&2
 fi
 
+# An attempt on a metered route (pay per call) gets its own gateway budget, attempt:<id>, so the
+# pool's per-attempt limit stops it running over (the router only decides whether it fits).
+AB=$(printf '%s' "$DEC" | hr attempt-budget "$TABLE" -)
+if [ -n "$AB" ]; then
+  GWMASTER=$(sed -n 's/^HIVE_GATEWAY_KEY=//p' "$HOME/.config/hive/gateway.env")
+  curl -s -m 20 -X POST http://127.0.0.1:4000/tag/new -H "Authorization: Bearer $GWMASTER" \
+    -H 'Content-Type: application/json' -d "$AB" | jq -e '.tag // .message' >/dev/null 2>&1 \
+    && echo "budget: $(jq -r '.name + " $" + (.max_budget|tostring)' <<<"$AB")" \
+    || { echo "couldn't create the attempt's gateway budget; not launching" >&2; exit 3; }
+  unset GWMASTER
+fi
+
 # Output names: worker-<n>.jsonl for Claude workers and codex-<n>.log for Codex reviewers,
 # as before routing; otherwise <role>-<n>.<jsonl|log>.
 case "$ROLE:$HARNESS" in
@@ -168,7 +180,8 @@ CAP=(); [ "$ROLE" = reviewer ] && CAP=(timeout --kill-after=30s 90m)
 GW=(); GWENV=()
 if [ "$(jq -r '.via_gateway // false' <<<"$DEC")" = true ]; then
   GWURL=http://127.0.0.1:4000
-  HIVE_GATEWAY_KEY=$(sed -n 's/^HIVE_GATEWAY_KEY=//p' "$HOME/.config/hive/gateway.env")
+  # The worker key only calls models; the gateway's master key never reaches an agent.
+  HIVE_GATEWAY_KEY=$(sed -n 's/^HIVE_WORKER_KEY=//p' "$HOME/.config/hive/gateway.env")
   MODEL=$(jq -r .route_id <<<"$DEC")
   case "$HARNESS" in
     # Spend in the gateway is tagged by task and attempt, as well as by pool, tier and route.
