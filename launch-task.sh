@@ -146,15 +146,30 @@ EOF
 # ---- launch ---------------------------------------------------------------------------
 # Reviews are capped at 90 minutes; work is not.
 CAP=(); [ "$ROLE" = reviewer ] && CAP=(timeout --kill-after=30s 90m)
+# A via_gateway route (e.g. SingularityCompute) goes through the hive gateway (deploy/gateway-up.sh),
+# asking for the route's alias, its route_id.
+GW=(); GWENV=()
+if [ "$(jq -r '.via_gateway // false' <<<"$DEC")" = true ]; then
+  GWURL=http://127.0.0.1:4000
+  HIVE_GATEWAY_KEY=$(sed -n 's/^HIVE_GATEWAY_KEY=//p' "$HOME/.config/hive/gateway.env")
+  MODEL=$(jq -r .route_id <<<"$DEC")
+  case "$HARNESS" in
+    claude-code) GWENV=(ANTHROPIC_BASE_URL="$GWURL" ANTHROPIC_AUTH_TOKEN="$HIVE_GATEWAY_KEY" ANTHROPIC_API_KEY=) ;;
+    codex) GWENV=(HIVE_GATEWAY_KEY="$HIVE_GATEWAY_KEY")
+           GW=(-c 'model_providers.hivegw.name="hive gateway"' -c "model_providers.hivegw.base_url=\"$GWURL/v1\""
+               -c 'model_providers.hivegw.env_key="HIVE_GATEWAY_KEY"' -c 'model_providers.hivegw.wire_api="responses"'
+               -c 'model_provider="hivegw"') ;;
+  esac
+fi
 case "$HARNESS" in
   claude-code)
     # Print mode, not --bg: nothing can wait on a permission prompt overnight.
     # A refused action is returned to the agent, which takes another route.
-    nohup "${CAP[@]}" claude -p --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} --permission-mode auto \
+    nohup env "${GWENV[@]}" "${CAP[@]}" claude -p --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} --permission-mode auto \
       --output-format stream-json --verbose "$(cat KICKOFF.md)" > "$OUT" 2> "${OUT%.*}.err" &
     echo "pid:$! log $OUT" ;;
   codex)
-    nohup "${CAP[@]}" codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" \
+    nohup env "${GWENV[@]}" "${CAP[@]}" codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" "${GW[@]}" \
       -m "$MODEL" ${EFFORT:+-c model_reasoning_effort="$EFFORT"} \
       --add-dir /home/omegahive/repos/hive-workspace.git --output-last-message "$DIR/codex-last-message.md" \
       - < KICKOFF.md > "$OUT" 2>&1 &
