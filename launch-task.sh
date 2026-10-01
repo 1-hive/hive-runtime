@@ -111,10 +111,12 @@ rid = d.get("route_id") or t.data["fixed"]["work"]
 print(json.dumps({"family": t.routes[rid]["family"], "tier": d.get("tier") or t.routes[rid]["tier"]}))' \
     "$TABLE" "$WDEC")
 fi
-REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND" \
+# runtime: where the attempt runs, so the router's evidence from before and after Phase E
+# (containers, a separate OS user) stays apart. Today agents run on the host as the operator's user.
+REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND" --arg rt "${ROUTE_RUNTIME:-host}" \
   --argjson facts "${ROUTE_FACTS:-{\}}" --argjson hint "${ROUTE_HINT:-null}" \
   --argjson author "$AUTHOR" --argjson history "$HISTORY" \
-  '{task: $t, attempt: $a, reason: $r, facts: ({kind: $k} + $facts), tools_needed: true}
+  '{task: $t, attempt: $a, reason: $r, runtime: $rt, facts: ({kind: $k} + $facts), tools_needed: true}
    + (if $hint then {hint: $hint} else {} end) + (if $author then {author: $author} else {} end)
    + (if ($history | length) > 0 then {history: $history} else {} end)')
 # The task's text for the scorer: the kickoff and the order files it names.
