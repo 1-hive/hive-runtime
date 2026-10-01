@@ -140,9 +140,10 @@ def supplied_facts(task: str) -> str | None:
             except ValueError:
                 continue
             dec = (e.get("data") or {}).get("decision") or {}
-            if e.get("type") == "route.decided" and dec.get("task") == task:
+            # Only the task's own work attempts: a review's facts include kind=review.
+            if e.get("type") == "route.decided" and dec.get("task") == task and ".review." not in str(dec.get("attempt", "")):
                 f = {k: v["value"] for k, v in (dec.get("facts") or {}).items()
-                     if isinstance(v, dict) and v.get("source") == "supplied"}
+                     if isinstance(v, dict) and v.get("source") == "supplied" and k != "kind"}
                 facts = f or facts
     return json.dumps(facts) if facts else None
 
