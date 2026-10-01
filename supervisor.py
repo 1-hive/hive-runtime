@@ -80,7 +80,7 @@ def ts(s: str | None) -> float | None:
 
 def latest_attempt(task: str, prefix: str) -> tuple[int, int | None] | None:
     """(n, pid) of the task's latest attempt of this kind, from the launcher's pid files."""
-    d = ROUTE / task
+    d = ROUTE / (f"{task}-review" if prefix == "review" else task)   # reviewers run in <task>-review
     best = None
     for p in d.glob(f"{prefix}.*.pid") if d.is_dir() else []:
         try:
@@ -228,7 +228,7 @@ def tick(dry: bool) -> None:
             if rv and not t.get("latest_review") and att and not alive(att[1]):
                 hist = json.loads(hive("task", task))["events"]
                 assigned = max((ts(e["recorded_at"]) for e in hist if e["type"] == "review.assigned"), default=0)
-                pid_time = (ROUTE / task / f"review.{att[0]}.pid").stat().st_mtime
+                pid_time = (ROUTE / f"{task}-review" / f"review.{att[0]}.pid").stat().st_mtime
                 if pid_time >= assigned - 60:   # this review's process, not an older one
                     emit("task.escalated", task, {"to": "chief_of_staff", "code": "other",
                                                   "reason": f"reviewer {rv}'s process ended without a verdict"}, dry=dry)
