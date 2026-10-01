@@ -48,6 +48,6 @@ for l in sys.stdin:
     what = e.get("goal") or e.get("task") or d.get("task") or d.get("actor_id") or ""
     extra = d.get("kind") or d.get("verdict") or d.get("code") or ""
     print("%5d %s %-18s %-22s %s %s" % (e["position"], e["recorded_at"][5:16], e["actor"]["id"], e["type"], what, extra))' ;;
-  help|-h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
+  help|-h|--help) sed -n '2,/^set /p' "$0" | grep '^#' | sed 's/^# \{0,1\}//' ;;
   *) echo "unknown command: $cmd (try: op help)" >&2; exit 2 ;;
 esac
