@@ -254,7 +254,7 @@ def tick(dry: bool) -> None:
             cls = failure_class(task, "worker", n)
             why = ("the worker hit a usage or quota limit" if cls == "capacity"
                    else "the worker's process ended without posting a result")
-            if t.get("latest_review") is None and any(e["type"] == "review.recorded" and (e.get("data") or {}).get("verdict") != "passed" for e in hist[-6:]):
+            if (t.get("latest_review") or {}).get("verdict") in ("failed", "needs_information"):
                 cls, why = "failed_check", "the independent review sent the result back"
             restart(t, hist, why, cls, dry)
             continue
