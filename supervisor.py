@@ -161,6 +161,14 @@ def emit(etype: str, task: str, data: dict, refs: list[str] = (), dry: bool = Fa
 def restart(t: dict, events: list[dict], reason: str, cls: str, dry: bool) -> None:
     task, attempt = t["id"], (t.get("ext") or {}).get("attempt", 1)
     reports = [r["pin"]["path"] for e in events if e["type"] == "task.reported" for r in e.get("refs", [])]
+    reviews = [e for e in events if e["type"] == "review.recorded"]
+    last_review = reviews[-1] if reviews and (reviews[-1].get("data") or {}).get("verdict") != "passed" else None
+    review_note = ""
+    if last_review:
+        rp = next((r["pin"]["path"] for r in last_review.get("refs", []) if r["rel"] == "review"), None)
+        review_note = (f"\n**The independent review of your last result said `{last_review['data']['verdict']}`.** "
+                       f"Read it first and address every finding: `{{DIR}}/workspace/{rp}` (pull the workspace). "
+                       "Then post a new result.\n")
     project = t.get("project") or "mtg-player"
     rel = f"projects/{project}/runs/{task}/restart-{attempt + 1}.md"
     body = f"""# Restart context: {task}, attempt {attempt + 1}
@@ -169,7 +177,7 @@ Written by the supervisor from the record at {dt.datetime.now(dt.timezone.utc):%
 
 You are **{t['owner']}**, restarted by the supervisor on task **{task}** ("{t['title']}", goal `{t.get('goal')}`).
 **Why:** {reason}.
-
+{review_note}
 Your earlier work is intact: your branch and task folder `{{DIR}}` (clones, hive.env, contract) are as you left them.
 
 Read, in order:
@@ -246,6 +254,8 @@ def tick(dry: bool) -> None:
             cls = failure_class(task, "worker", n)
             why = ("the worker hit a usage or quota limit" if cls == "capacity"
                    else "the worker's process ended without posting a result")
+            if t.get("latest_review") is None and any(e["type"] == "review.recorded" and (e.get("data") or {}).get("verdict") != "passed" for e in hist[-6:]):
+                cls, why = "failed_check", "the independent review sent the result back"
             restart(t, hist, why, cls, dry)
             continue
         if now - since <= every + GRACE:
