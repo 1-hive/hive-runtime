@@ -111,6 +111,24 @@ def stop(pid: int) -> None:
         pass
 
 
+CAPACITY_SIGNS = ("out of credits", "session limit", "usage limit", "rate limit", "hit your limit",
+                  "quota", "insufficient_quota", "overloaded")
+
+
+def failure_class(task: str, prefix: str, n: int) -> str:
+    """Why the attempt's process ended, from the tail of its output: `capacity` for a
+    usage or quota limit (so the router avoids that pool), else `interrupted`."""
+    try:
+        out = json.loads((ROUTE / task / f"{prefix}.{n}.attempt.json").read_text()).get("output")
+        tail = Path(out).read_bytes()[-6000:].decode("utf-8", "replace").lower()
+        err = Path(str(Path(out).with_suffix("")) + ".err")
+        if err.exists():
+            tail += err.read_bytes()[-2000:].decode("utf-8", "replace").lower()
+    except (OSError, ValueError, TypeError):
+        return "interrupted"
+    return "capacity" if any(sign in tail for sign in CAPACITY_SIGNS) else "interrupted"
+
+
 def supplied_facts(task: str) -> str | None:
     """The facts the chief of staff supplied at the task's last routed launch."""
     log_path = ROOT / "route-log.jsonl"
@@ -225,7 +243,10 @@ def tick(dry: bool) -> None:
                                               "reason": f"{attempt} attempts; the last worker process ended without a result"}, dry=dry)
                 continue
             hist = json.loads(hive("task", task))["events"]
-            restart(t, hist, "the worker's process ended without posting a result", "interrupted", dry)
+            cls = failure_class(task, "worker", n)
+            why = ("the worker hit a usage or quota limit" if cls == "capacity"
+                   else "the worker's process ended without posting a result")
+            restart(t, hist, why, cls, dry)
             continue
         if now - since <= every + GRACE:
             continue
