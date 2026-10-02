@@ -22,7 +22,7 @@ Workers run non-interactively: **your session ends the moment you stop to wait.*
 ## Lifecycle
 
 1. **Accept:** `hive emit task.accepted --task <id>`, once you have read the order and this contract.
-2. **Plan:** write a short plan (question, approach, deliverables, how you'll check them, risks) as a report in the workspace, then `task.reported` with `kind: progress`. Then **continue**; don't wait for approval.
+2. **Plan:** write a short plan (question, approach, deliverables, how you'll check them, risks) as a report in the workspace, then `task.reported` with `kind: progress` (its data is only `kind`, plus an optional `ext` object; the report itself goes in the pin, e.g. `--data '{"kind":"progress"}' --ref report=<pin>`). Then **continue**; don't wait for approval.
 3. **Check in:** at least once per `checkin_every` interval on your lease, commit your progress and emit `task.reported` with `kind: checkpoint`. The checkpoint report says what's done, what's next, and anything a replacement would need to continue. A supervisor may restart you from your last checkpoint.
 4. **Blocked:** only for a decision outside the order's scope, missing access, or an external blocker. Commit a question file (decision, options, recommendation, evidence, safe default), then `task.blocked` with `needs` and the question pin. Stop until `task.answered`, then read the answer and `task.unblocked`. The chief of staff answers what it can and escalates the rest to the human.
 5. **Result:** commit the result report (question, conclusion and confidence, evidence and reproduction, limitations, recommended next task, changed commits and branches), then `task.result_posted` with the result pin. Don't post a result because time ran out; post a checkpoint and say so.
