@@ -17,8 +17,9 @@ A restart's context is generated from the record (order, last reports, reason),
 committed to the workspace and pinned on task.restarted, then the worker is
 relaunched through tools/launch-task.sh with ROUTE_LAST_CLASS and the task's
 last supplied ROUTE_FACTS. Tasks with an open escalation are skipped until the chief
-of staff acts on the task after it (e.g. assigns a new review): only the chief of staff
-or the operator may resolve an escalation, but its later action shows it was handled.
+of staff acts on the task after it (e.g. assigns a new review), or, when a reviewer ended
+without a verdict, until a review is recorded: only the chief of staff or the operator may
+resolve an escalation, but these later events show it was handled.
 
     supervisor.py [--interval 60] [--once] [--dry-run]
 """
@@ -217,9 +218,12 @@ Then: `source {{DIR}}/hive.env`, pull the workspace, post a checkpoint that says
 
 
 def handled(task: str, esc: dict) -> bool:
-    """The chief of staff has acted on the task since the escalation was raised."""
+    """The chief of staff has acted on the task since the escalation was raised, or, for a
+    reviewer that ended without a verdict, a review has since been recorded."""
     events = json.loads(hive("task", task))["events"]
-    return any(e["position"] > esc.get("position", 0) and e["actor"]["class"] == "chief_of_staff"
+    reviewer_died = str(esc.get("reason", "")).startswith("reviewer ")
+    return any(e["position"] > esc.get("position", 0)
+               and (e["actor"]["class"] == "chief_of_staff" or (reviewer_died and e["type"] == "review.recorded"))
                for e in events)
 
 
