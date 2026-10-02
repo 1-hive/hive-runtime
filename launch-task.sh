@@ -6,9 +6,11 @@
 #   launch-task.sh reviewer <task-id> <actor-id> <kickoff-file>
 #
 # worker:   in ~/work/1hive/<task-id>, mtg-player on a new branch hive/<task-id> from
-#           base-branch (default main). Re-running for an existing folder relaunches in it
-#           (a restart).
-# reviewer: in ~/work/1hive/<task-id>-review, mtg-player on hive/<task-id>.
+#           base-branch (default main). The commit the branch starts from is recorded once in
+#           base.json ({"mtg-player": "<sha>"}): the worker pins it as the result's base.
+#           Re-running for an existing folder relaunches in it (a restart, same base).
+# reviewer: in ~/work/1hive/<task-id>-review, mtg-player on hive/<task-id>. The reviewer
+#           reviews base..code from the result's pins (tools/result-refs.sh), not the branch.
 #
 # The kickoff file may use {DIR} for the task folder; it is copied to KICKOFF.md.
 #
@@ -42,6 +44,8 @@ if [ ! -d "$DIR" ]; then
   if [ "$ROLE" = worker ]; then
     git clone -q -b "$BASE" /home/omegahive/repos/mtg-player.git "$DIR/mtg-player"
     git -C "$DIR/mtg-player" checkout -q -b "hive/$TASK"
+    # The result's base pin: where this task's change starts (hive-record SPEC §24.7).
+    jq -n --arg c "$(git -C "$DIR/mtg-player" rev-parse HEAD)" '{"mtg-player": $c}' > "$DIR/base.json"
   else
     # The task's code may live in another repo (e.g. the arena); then review mtg-player main.
     git clone -q -b "hive/$TASK" /home/omegahive/repos/mtg-player.git "$DIR/mtg-player" 2>/dev/null \
@@ -60,6 +64,7 @@ json.dump(reg, open(f"{d}/registry.json", "w"), indent=2)
 EOF
 fi
 cp /home/omegahive/repos/1-hive/docs/worker-contract.md "$DIR/WORKER-CONTRACT.md"
+cp /home/omegahive/repos/1-hive/tools/result-refs.sh "$DIR/result-refs.sh"
 sed "s#{DIR}#$DIR#g" "$KICKOFF" > "$DIR/KICKOFF.md"
 git -C "$DIR/workspace" pull -q --ff-only || true
 cd "$DIR"
