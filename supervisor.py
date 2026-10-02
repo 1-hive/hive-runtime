@@ -16,7 +16,9 @@ for each task a worker holds, applies the ladder:
 A restart's context is generated from the record (order, last reports, reason),
 committed to the workspace and pinned on task.restarted, then the worker is
 relaunched through tools/launch-task.sh with ROUTE_LAST_CLASS and the task's
-last supplied ROUTE_FACTS. Tasks with an open escalation are skipped.
+last supplied ROUTE_FACTS. Tasks with an open escalation are skipped until the chief
+of staff acts on the task after it (e.g. assigns a new review): only the chief of staff
+or the operator may resolve an escalation, but its later action shows it was handled.
 
     supervisor.py [--interval 60] [--once] [--dry-run]
 """
@@ -214,12 +216,22 @@ Then: `source {{DIR}}/hive.env`, pull the workspace, post a checkpoint that says
                                       "reason": f"restart launch failed (rc {r.returncode}): {r.stderr.strip()[-200:]}"})
 
 
+def handled(task: str, esc: dict) -> bool:
+    """The chief of staff has acted on the task since the escalation was raised."""
+    events = json.loads(hive("task", task))["events"]
+    return any(e["position"] > esc.get("position", 0) and e["actor"]["class"] == "chief_of_staff"
+               for e in events)
+
+
 def tick(dry: bool) -> None:
     state = json.loads(hive("state"))
     now = time.time()
     for t in state.get("tasks", {}).values():
         ext = t.get("ext") or {}
-        if ext.get("escalation") or t["status"] not in ("assigned", "in_progress", "in_review"):
+        if t["status"] not in ("assigned", "in_progress", "in_review"):
+            continue
+        esc = ext.get("escalation")
+        if esc and not handled(t["id"], esc):
             continue
         task = t["id"]
         if t["status"] == "in_review":
