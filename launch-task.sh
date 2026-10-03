@@ -23,6 +23,9 @@
 #                     outage, capacity, truncated, missing_info, failed_check, stalled,
 #                     indeterminate, interrupted
 #   ROUTE_REASON      reassign, to move off the previous route
+#   ROUTE_OVERRIDE    JSON {"route_id": ..., "reason": ..., "by": "operator"}: an operator's
+#                     explicit choice (RT1), e.g. a same-family review when no other family has
+#                     capacity. Only on the operator's instruction; the reason says which.
 # Claude Code runs in print mode with auto permissions; Codex runs `exec`.
 set -euo pipefail
 ROLE=$1 TASK=$2 ACTOR=$3 KICKOFF=$4 BASE=${5:-main}
@@ -120,9 +123,10 @@ fi
 # (containers, a separate OS user) stays apart. Today agents run on the host as the operator's user.
 REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND" --arg rt "${ROUTE_RUNTIME:-host}" \
   --argjson facts "${ROUTE_FACTS:-{\}}" --argjson hint "${ROUTE_HINT:-null}" \
-  --argjson author "$AUTHOR" --argjson history "$HISTORY" \
+  --argjson author "$AUTHOR" --argjson history "$HISTORY" --argjson override "${ROUTE_OVERRIDE:-null}" \
   '{task: $t, attempt: $a, reason: $r, runtime: $rt, facts: ({kind: $k} + $facts), tools_needed: true}
    + (if $hint then {hint: $hint} else {} end) + (if $author then {author: $author} else {} end)
+   + (if $override then {override: $override} else {} end)
    + (if ($history | length) > 0 then {history: $history} else {} end)')
 # The task's text for the scorer: the kickoff and the order files it names.
 { cat KICKOFF.md; for f in $(grep -o "$DIR/workspace/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u); do
