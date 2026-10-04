@@ -18,7 +18,9 @@
 # route block below. Optional environment for the router (ROUTING.md §4):
 #   ROUTE_FACTS       JSON object of task facts, e.g. '{"specification":"explicit",
 #                     "verification":"independent","scope":"few","consequence":"reversible"}'
-#   ROUTE_HINT        JSON {"tier": ..., "reason": ...}: raises the tier, never lowers it
+#   ROUTE_HINT        JSON {"tier": ..., "reason": ...}: raises the tier, never lowers it.
+#                     For a reviewer, an order line "Review tier: strong" (or standard) sets it,
+#                     so a high-stakes task's reviews ask for a higher tier than the author's.
 #   ROUTE_LAST_CLASS  failure class of this role's previous attempt on the task (§5):
 #                     outage, capacity, truncated, missing_info, failed_check, stalled,
 #                     indeterminate, interrupted
@@ -119,6 +121,13 @@ rid = d.get("route_id") or t.data["fixed"]["work"]
 print(json.dumps({"family": t.routes[rid]["family"], "tier": d.get("tier") or t.routes[rid]["tier"]}))' \
     "$TABLE" "$WDEC")
 fi
+# A high-stakes order asks for a higher review tier: "Review tier: strong" in the order file.
+if [ "$ROLE" = reviewer ] && [ -z "${ROUTE_HINT:-}" ]; then
+  ORDERS=$(grep -o "projects/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u | sed "s#^#$DIR/workspace/#")
+  RT=$(grep -h -o -i -E '^Review tier: *(light|standard|strong)' $ORDERS /dev/null 2>/dev/null \
+       | head -1 | sed -E 's/.*: *//' | tr 'A-Z' 'a-z')
+  [ -n "$RT" ] && ROUTE_HINT=$(jq -nc --arg t "$RT" '{tier: $t, reason: "the order asks for this review tier"}')
+fi
 # runtime: where the attempt runs, so the router's evidence from before and after Phase E
 # (containers, a separate OS user) stays apart. Today agents run on the host as the operator's user.
 REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND" --arg rt "${ROUTE_RUNTIME:-host}" \
@@ -183,7 +192,7 @@ fi
 case "$ROLE:$HARNESS" in
   worker:claude-code) OUT=$DIR/worker-$n.jsonl ;;
   reviewer:codex)     OUT=$DIR/codex-$n.log ;;
-  *:claude-code)      OUT=$DIR/$PREFIX-$n.jsonl ;;
+  *:claude-code*)     OUT=$DIR/$PREFIX-$n.jsonl ;;
   *)                  OUT=$DIR/$PREFIX-$n.log ;;
 esac
 printf '%s' "$DEC" | hr manifest - --cwd "$DIR" --output "$OUT" > "$RS/$PREFIX.$n.attempt.json"
@@ -207,7 +216,7 @@ if [ "$(jq -r '.via_gateway // false' <<<"$DEC")" = true ]; then
   MODEL=$(jq -r .route_id <<<"$DEC")
   case "$HARNESS" in
     # Spend in the gateway is tagged by task and attempt, as well as by pool, tier and route.
-    claude-code) GWENV=(ANTHROPIC_BASE_URL="$GWURL" ANTHROPIC_AUTH_TOKEN="$HIVE_GATEWAY_KEY" ANTHROPIC_API_KEY=
+    claude-code|claude-code-allowlist) GWENV=(ANTHROPIC_BASE_URL="$GWURL" ANTHROPIC_AUTH_TOKEN="$HIVE_GATEWAY_KEY" ANTHROPIC_API_KEY=
                         ANTHROPIC_CUSTOM_HEADERS="x-litellm-tags: task:$TASK,attempt:$ATTEMPT") ;;
     codex) GWENV=(HIVE_GATEWAY_KEY="$HIVE_GATEWAY_KEY")
            GW=(-c 'model_providers.hivegw.name="hive gateway"' -c "model_providers.hivegw.base_url=\"$GWURL/v1\""
@@ -223,6 +232,14 @@ case "$HARNESS" in
     nohup env "${GWENV[@]}" "${CAP[@]}" claude -p --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} --permission-mode auto \
       --output-format stream-json --verbose "$(cat KICKOFF.md)" > "$OUT" 2> "${OUT%.*}.err" &
     echo "$!" > "$RS/$PREFIX.$n.pid"   # the supervisor finds the attempt's process here
+    echo "pid:$! log $OUT" ;;
+  claude-code-allowlist)
+    # No model judges this route's actions (its own model would, in auto mode): a fixed allow list,
+    # everything else denied (deploy/review-allowlist.json; table v14).
+    nohup env "${GWENV[@]}" "${CAP[@]}" claude -p --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} --permission-mode dontAsk \
+      --settings /home/omegahive/repos/1-hive/deploy/review-allowlist.json \
+      --output-format stream-json --verbose "$(cat KICKOFF.md)" > "$OUT" 2> "${OUT%.*}.err" &
+    echo "$!" > "$RS/$PREFIX.$n.pid"
     echo "pid:$! log $OUT" ;;
   codex)
     nohup env "${GWENV[@]}" "${CAP[@]}" codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" "${GW[@]}" \
