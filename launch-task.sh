@@ -125,7 +125,7 @@ fi
 if [ "$ROLE" = reviewer ] && [ -z "${ROUTE_HINT:-}" ]; then
   ORDERS=$(grep -o "projects/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u | sed "s#^#$DIR/workspace/#")
   RT=$(grep -h -o -i -E '^Review tier: *(light|standard|strong)' $ORDERS /dev/null 2>/dev/null \
-       | head -1 | sed -E 's/.*: *//' | tr 'A-Z' 'a-z')
+       | head -1 | sed -E 's/.*: *//' | tr 'A-Z' 'a-z' || true)   # no such line: no hint
   [ -n "$RT" ] && ROUTE_HINT=$(jq -nc --arg t "$RT" '{tier: $t, reason: "the order asks for this review tier"}')
 fi
 # runtime: where the attempt runs, so the router's evidence from before and after Phase E
