@@ -25,6 +25,9 @@
 #                     outage, capacity, truncated, missing_info, failed_check, stalled,
 #                     indeterminate, interrupted
 #   ROUTE_REASON      reassign, to move off the previous route
+#   EXTRA_REPOS       more registered repositories the task changes (e.g. "mtg-colosseo"), each
+#                     mirrored at ~/repos/<name>.git: a worker gets <name> on hive/<task> from main
+#                     (its base recorded in base.json), a reviewer gets hive/<task>.
 #   ROUTE_OVERRIDE    JSON {"route_id": ..., "reason": ..., "by": "operator"}: an operator's
 #                     explicit choice (RT1), e.g. a same-family review when no other family has
 #                     capacity. Only on the operator's instruction; the reason says which.
@@ -56,15 +59,26 @@ if [ ! -d "$DIR" ]; then
     git clone -q -b "hive/$TASK" /home/omegahive/repos/mtg-player.git "$DIR/mtg-player" 2>/dev/null \
       || git clone -q /home/omegahive/repos/mtg-player.git "$DIR/mtg-player"
   fi
+  for R in ${EXTRA_REPOS:-}; do
+    [[ "$R" =~ $ID ]] || { echo "bad repo name $R" >&2; exit 2; }
+    if [ "$ROLE" = worker ]; then
+      git clone -q "/home/omegahive/repos/$R.git" "$DIR/$R"
+      git -C "$DIR/$R" checkout -q -b "hive/$TASK"
+      jq --arg r "$R" --arg c "$(git -C "$DIR/$R" rev-parse HEAD)" '. + {($r): $c}' "$DIR/base.json" > "$DIR/base.json.tmp"
+      mv "$DIR/base.json.tmp" "$DIR/base.json"
+    else
+      git clone -q -b "hive/$TASK" "/home/omegahive/repos/$R.git" "$DIR/$R"
+    fi
+  done
   if [ -d "$SEED_BUILD" ]; then
     cp -a "$SEED_BUILD" "$DIR/mtg-player/adapters/xmage-external-seat/.build"
   fi
-  python3 - "$DIR" <<'EOF'
+  python3 - "$DIR" ${EXTRA_REPOS:-} <<'EOF'
 import json, sys
 d = sys.argv[1]
 reg = json.load(open("/home/omegahive/repos/1-hive/deploy/registry.json"))
-reg["repositories"]["workspace"]["local_path"] = f"{d}/workspace"
-reg["repositories"]["mtg-player"]["local_path"] = f"{d}/mtg-player"
+for name in ["workspace", "mtg-player", *sys.argv[2:]]:
+    reg["repositories"][name]["local_path"] = f"{d}/{name}"
 json.dump(reg, open(f"{d}/registry.json", "w"), indent=2)
 EOF
 fi
