@@ -133,7 +133,9 @@ def failure_class(task: str, prefix: str, n: int) -> str:
 
 
 def supplied_facts(task: str) -> str | None:
-    """The facts the chief of staff supplied at the task's last routed launch."""
+    """The facts the chief of staff supplied at the task's first routed work launch: they describe
+    the task. A later hand launch for one step (e.g. only posting a result) may supply narrower
+    facts, which must not set the tier of the next full attempt."""
     log_path = ROOT / "route-log.jsonl"
     facts = None
     if log_path.exists():
@@ -147,7 +149,7 @@ def supplied_facts(task: str) -> str | None:
             if e.get("type") == "route.decided" and dec.get("task") == task and ".review." not in str(dec.get("attempt", "")):
                 f = {k: v["value"] for k, v in (dec.get("facts") or {}).items()
                      if isinstance(v, dict) and v.get("source") == "supplied" and k != "kind"}
-                facts = f or facts
+                facts = facts or f or None
     return json.dumps(facts) if facts else None
 
 
