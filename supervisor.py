@@ -117,6 +117,8 @@ def alive(pid: int | None) -> bool:
         return False
     try:
         os.kill(pid, 0)
+    except PermissionError:   # sudo, starting an agent user's container, runs as root
+        pass
     except OSError:
         return False
     return not Path(f"/proc/{pid}/status").read_text().count("State:\tZ")
@@ -136,9 +138,13 @@ def descendants(pid: int) -> list[int]:
 
 def stop(pid: int, container: str | None = None) -> None:
     """Stops the attempt: its container if it runs in one (everything in it goes with it),
-    and its whole process tree on the host: the harness and anything it started."""
+    and its whole process tree on the host: the harness and anything it started.
+    `container` is the launcher's "<user> <name>" ("-": the operator's own Podman)."""
     if container:
-        subprocess.run(["podman", "stop", "-t", "10", container], capture_output=True, check=False)
+        user, _, name = container.rpartition(" ")
+        cmd = (["podman"] if user in ("", "-")
+               else ["sudo", "-n", "-u", user, "/usr/local/bin/hive-agent-podman"])
+        subprocess.run([*cmd, "stop", "-t", "10", name], capture_output=True, check=False)
     for p in [*descendants(pid), pid]:
         try:
             os.kill(p, signal.SIGTERM)

@@ -304,10 +304,45 @@ if [ "$RUNTIME" = host ]; then
 else
   A=$HOME/.config/hive/agents
   CNAME=hive-$(tr . - <<<"$ATTEMPT")
+  # The actor's own OS user (deploy/agent-users.sh; SPEC §6.6), when it exists: its rootless Podman
+  # runs the container, so an escape lands as that unprivileged user. Otherwise the operator's.
+  AU=hive-${ACTOR//./-}
+  if id "$AU" >/dev/null 2>&1; then
+    P=(sudo -n -u "$AU" /usr/local/bin/hive-agent-podman)
+    # The image, copied into the user's storage when it differs from the operator's build.
+    WANT=$(podman image inspect --format '{{.Id}}' localhost/1hive-agent:latest)
+    if [ "$("${P[@]}" image inspect --format '{{.Id}}' localhost/1hive-agent:latest 2>/dev/null)" != "$WANT" ]; then
+      echo "copying the agent image to $AU"
+      podman save localhost/1hive-agent:latest | "${P[@]}" load -q >/dev/null
+    fi
+    # Only this task's folder: the user may enter and change it; what it creates stays the operator's too.
+    setfacl -R -m "u:$AU:rwX,d:u:$AU:rwX,d:u:$USER:rwX" "$DIR"
+  else
+    P=(podman)
+  fi
+  # Keys and settings reach the container as the user's Podman secrets, read-only, never as host
+  # paths it could read itself. Recreated at each launch, so a rotated key takes effect.
+  # Named per attempt, so attempts running at once don't share one; those of ended attempts go.
+  RUNNING=$("${P[@]}" ps --format '{{.Names}}')
+  for old in $("${P[@]}" secret ls --format '{{.Name}}' | grep '^hive-' || true); do
+    grep -qxF "${old%.*}" <<<"$RUNNING" || "${P[@]}" secret rm "$old" >/dev/null 2>&1 || true
+  done
+  SEC=()
+  secret() {   # secret <name> <file> <podman --secret options after the name>
+    "${P[@]}" secret rm "$CNAME.$1" >/dev/null 2>&1 || true
+    # Piped: sudo (use_pty) doesn't pass a redirected file through as stdin.
+    cat "$2" | "${P[@]}" secret create "$CNAME.$1" - >/dev/null
+    SEC+=(--secret "$CNAME.$1,$3")
+  }
+  secret key "$KEY" "type=mount,target=$KEY,mode=0400"
+  secret ssh "$A/$ACTOR.ssh" "type=mount,target=/root/.ssh/id_ed25519,mode=0400"
+  secret known-hosts "$A/known_hosts" "type=mount,target=/root/.ssh/known_hosts,mode=0444"
+  secret allowlist "$ALLOWLIST" "type=mount,target=$ALLOWLIST,mode=0444"
   # Clones' remotes are the bare repositories' host paths; in the container, git reaches them
   # over SSH as this actor (tools/git/hive-git-shell, whose pre-receive hook limits its pushes).
-  CENV=(-e GIT_CONFIG_COUNT=1 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@$H/home/omegahive/repos/.insteadOf"
-        -e GIT_CONFIG_VALUE_0=/home/omegahive/repos/
+  # The task folder's files belong to the operator's user, which the container doesn't map.
+  CENV=(-e GIT_CONFIG_COUNT=2 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@$H/home/omegahive/repos/.insteadOf"
+        -e GIT_CONFIG_VALUE_0=/home/omegahive/repos/ -e GIT_CONFIG_KEY_1=safe.directory -e 'GIT_CONFIG_VALUE_1=*'
         -e "GIT_AUTHOR_NAME=$ACTOR" -e "GIT_AUTHOR_EMAIL=$ACTOR@1-hive.invalid"
         -e "GIT_COMMITTER_NAME=$ACTOR" -e "GIT_COMMITTER_EMAIL=$ACTOR@1-hive.invalid")
   for kv in "${GWENV[@]}"; do CENV+=(-e "$kv"); done
@@ -316,27 +351,31 @@ else
     claude-code*)
       # A long-lived token (`claude setup-token`), not the operator's own login, whose refresh
       # would race the host's.
-      # Passed by name from this environment, so it isn't on a command line.
-      if [ "${#GWENV[@]}" -eq 0 ]; then
-        export CLAUDE_CODE_OAUTH_TOKEN; CLAUDE_CODE_OAUTH_TOKEN=$(cat "$HOME/.config/hive/claude-oauth-token")
-        CRED=(-e CLAUDE_CODE_OAUTH_TOKEN)
+      [ "${#GWENV[@]}" -eq 0 ] && secret claude-token "$HOME/.config/hive/claude-oauth-token" \
+        "type=env,target=CLAUDE_CODE_OAUTH_TOKEN" ;;
+    codex)
+      if [ "${P[0]}" = sudo ]; then
+        # The actor user's own Codex login (deploy/README.md), never the operator's.
+        "${P[@]}" unshare sh -c 'test -s "$HOME/.codex/auth.json"' \
+          || { echo "$AU has no Codex login: see deploy/README.md, 'Container runtime'" >&2; exit 3; }
+        CRED=(-v "/var/lib/1hive-agents/$AU/.codex:/root/.codex")
+      else
+        CRED=(-v "$HOME/.codex:/root/.codex")   # the operator's login, refreshed in place
       fi ;;
-    codex) CRED=(-v "$HOME/.codex:/root/.codex") ;;   # the shared login, refreshed in place
   esac
   CAPC=(); [ "$ROLE" = reviewer ] && CAPC=(--timeout 5400)
-  RUN=(podman run --rm -i --name "$CNAME" --init "${CAPC[@]}"   # -i: codex reads its prompt on stdin
+  RUN=("${P[@]}" run --rm -i --name "$CNAME" --init "${CAPC[@]}"   # -i: codex reads its prompt on stdin
        --network slirp4netns:allow_host_loopback=true
        --device /dev/fuse --device /dev/net/tun
-       # Capabilities over the container's own namespaces only (rootless: nothing beyond the operator's
-       # user on the host). Nested Podman needs them for bridge networks (netavark enters the netns it
+       # Capabilities over the container's own namespaces only (rootless: nothing beyond its user
+       # on the host). Nested Podman needs them for bridge networks (netavark enters the netns it
        # creates), e.g. mtg-player's human-play sandbox (cp-1-quickstart).
        --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN
        --security-opt label=disable --security-opt seccomp=unconfined --security-opt 'unmask=/proc/*'
-       -v "$DIR:$DIR" -w "$DIR" -v "$KEY:$KEY:ro"
-       -v "$A/$ACTOR.ssh:/root/.ssh/id_ed25519:ro" -v "$A/known_hosts:/root/.ssh/known_hosts:ro"
-       -v "$ALLOWLIST:$ALLOWLIST:ro" "${CRED[@]}" "${CENV[@]}" localhost/1hive-agent:latest)
+       -v "$DIR:$DIR" -w "$DIR" "${SEC[@]}" "${CRED[@]}" "${CENV[@]}" localhost/1hive-agent:latest)
   WSDIR=()
-  echo "$CNAME" > "$RS/$PREFIX.$n.container"   # the supervisor stops it by name
+  # The supervisor stops it by name, as its user ("-" for the operator's).
+  echo "$([ "${P[0]}" = sudo ] && echo "$AU" || echo -) $CNAME" > "$RS/$PREFIX.$n.container"
 fi
 case "$HARNESS" in
   claude-code)
@@ -355,10 +394,11 @@ case "$HARNESS" in
     echo "$!" > "$RS/$PREFIX.$n.pid"
     echo "pid:$! log $OUT ($RUNTIME)" ;;
   codex)
-    nohup "${RUN[@]}" codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" "${GW[@]}" \
+    # The prompt is piped, not redirected: see the secrets above.
+    cat KICKOFF.md | nohup "${RUN[@]}" codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" "${GW[@]}" \
       -m "$MODEL" ${EFFORT:+-c model_reasoning_effort="$EFFORT"} \
       "${WSDIR[@]}" --output-last-message "$DIR/codex-last-message.md" \
-      - < KICKOFF.md > "$OUT" 2>&1 &
+      - > "$OUT" 2>&1 &
     echo "$!" > "$RS/$PREFIX.$n.pid"   # the supervisor finds the attempt's process here
     echo "codex pid $! log $OUT ($RUNTIME)" ;;
   *) echo "router chose harness $HARNESS, which this launcher can't start" >&2; exit 3 ;;
