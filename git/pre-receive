@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Installed in each hive bare repository (tools/git/install.sh). Only agents' pushes are
+# limited (HIVE_GIT_ACTOR, set by hive-git-shell); the operator's own pushes pass.
+# Agents may create or fast-forward refs/heads/hive/<anything>, and fast-forward the
+# workspace's main (reports go there). Nothing else: no deletions, no rewrites, no tags,
+# no other branch, so no agent can make a pinned commit unreachable.
+[ -n "${HIVE_GIT_ACTOR:-}" ] || exit 0
+REPO=$(basename "$(pwd)")
+Z=0000000000000000000000000000000000000000
+rc=0
+while read -r old new ref; do
+  if [ "$new" = "$Z" ]; then echo "refused ($HIVE_GIT_ACTOR): deleting $ref" >&2; rc=1; continue; fi
+  case "$ref" in
+    refs/heads/hive/*) ;;
+    refs/heads/main)
+      [ "$REPO" = hive-workspace.git ] \
+        || { echo "refused ($HIVE_GIT_ACTOR): $ref in $REPO (merging is decided after review)" >&2; rc=1; continue; } ;;
+    *) echo "refused ($HIVE_GIT_ACTOR): $ref" >&2; rc=1; continue ;;
+  esac
+  if [ "$old" != "$Z" ] && ! git merge-base --is-ancestor "$old" "$new"; then
+    echo "refused ($HIVE_GIT_ACTOR): $ref is not a fast-forward" >&2; rc=1
+  fi
+done
+exit $rc

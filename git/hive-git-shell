@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Forced command for an agent's SSH key (authorized_keys: command="hive-git-shell <actor>",restrict).
+# Lets the agent fetch from and push to the hive's bare repositories under ~/repos, and nothing
+# else. Pushes are checked by the repositories' pre-receive hook (tools/git/pre-receive), which
+# reads HIVE_GIT_ACTOR. 1-hive PLAN, Phase D item 3.
+set -euo pipefail
+ACTOR=${1:?actor}
+[[ "$ACTOR" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || { echo "bad actor" >&2; exit 1; }
+CMD=${SSH_ORIGINAL_COMMAND:-}
+# git-upload-pack '/home/omegahive/repos/<name>.git'  (or git-receive-pack, git-upload-archive)
+if [[ "$CMD" =~ ^(git-upload-pack|git-receive-pack|git-upload-archive)\ \'?(/home/omegahive/repos/)?([a-z0-9][a-z0-9._-]*\.git)/?\'?$ ]]; then
+  VERB=${BASH_REMATCH[1]} NAME=${BASH_REMATCH[3]}
+  REPO=$HOME/repos/$NAME
+  [[ "$NAME" != *..* && -f "$REPO/HEAD" ]] || { echo "no such repository" >&2; exit 1; }
+  export HIVE_GIT_ACTOR=$ACTOR
+  logger -t hive-git "$ACTOR $VERB $NAME" 2>/dev/null || true
+  exec git-shell -c "$VERB '$REPO'"
+fi
+echo "hive-git-shell: only git fetch and push to the hive's repositories" >&2
+exit 1

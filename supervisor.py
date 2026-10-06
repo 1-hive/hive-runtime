@@ -134,8 +134,11 @@ def descendants(pid: int) -> list[int]:
     return out
 
 
-def stop(pid: int) -> None:
-    """Stops the attempt's whole process tree: the harness and anything it started."""
+def stop(pid: int, container: str | None = None) -> None:
+    """Stops the attempt: its container if it runs in one (everything in it goes with it),
+    and its whole process tree on the host: the harness and anything it started."""
+    if container:
+        subprocess.run(["podman", "stop", "-t", "10", container], capture_output=True, check=False)
     for p in [*descendants(pid), pid]:
         try:
             os.kill(p, signal.SIGTERM)
@@ -428,7 +431,8 @@ def tick(dry: bool) -> None:
             continue
         hist = json.loads(hive("task", task))["events"]
         if not dry:
-            stop(pid)
+            cf = ROUTE / task / f"worker.{n}.container"
+            stop(pid, cf.read_text().strip() if cf.exists() else None)
             time.sleep(5)
         restart(t, hist, f"silent for {int((now - since) / 60)} min after {nudges} nudges", "stalled", dry)
 

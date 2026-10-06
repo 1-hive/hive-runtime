@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Prepare a task folder for one actor and launch its session.
-# Minimal stand-in for the Phase E launcher: same steps, no containers yet.
+# Minimal stand-in for the Phase E launcher. Agents run on the host or, with the container
+# runtime (ROUTE_RUNTIME, default deploy/runtime), each in its own rootless Podman container.
 #
 #   launch-task.sh worker   <task-id> <actor-id> <kickoff-file> [base-branch]
 #   launch-task.sh reviewer <task-id> <actor-id> <kickoff-file>
@@ -29,6 +30,9 @@
 #   EXTRA_REPOS       more registered repositories the task changes (e.g. "mtg-colosseo"), each
 #                     mirrored at ~/repos/<name>.git: a worker gets <name> on hive/<task> from main
 #                     (its base recorded in base.json), a reviewer gets hive/<task>.
+#   ROUTE_RUNTIME     host or container (default: deploy/runtime). The container runtime needs the
+#                     agent image (deploy/agent/build.sh), git keys (tools/git/install.sh) and, for
+#                     Claude Code, ~/.config/hive/claude-oauth-token (`claude setup-token`).
 #   ROUTE_OVERRIDE    JSON {"route_id": ..., "reason": ..., "by": "operator"}: an operator's
 #                     explicit choice (RT1), e.g. a same-family review when no other family has
 #                     capacity. Only on the operator's instruction; the reason says which.
@@ -46,6 +50,22 @@ DIR=$ROOT/$TASK; [ "$ROLE" = reviewer ] && DIR=$ROOT/$TASK-review
 SEED_BUILD=${SEED_BUILD:-$ROOT/hbp-1-feasibility/mtg-player/adapters/xmage-external-seat/.build}
 KEY=$HOME/.config/hive/agents/$ACTOR.key
 [ -f "$KEY" ] || { echo "no key for $ACTOR" >&2; exit 2; }
+# Where the attempt runs: `host`, as the operator's user, or `container`: its own rootless Podman
+# container (PLAN Phase E 1; SPEC §6.6), holding only this task's folder, this actor's record and
+# git keys, and the harness's credentials. Default: deploy/runtime. Reported to the router.
+RUNTIME=${ROUTE_RUNTIME:-$(cat /home/omegahive/repos/1-hive/deploy/runtime 2>/dev/null || echo host)}
+case "$RUNTIME" in
+  host) H=127.0.0.1 ;;
+  container)   # from a container, the host's loopback (record, model gateway, sshd) is 10.0.2.2
+    H=10.0.2.2
+    [ -f "$HOME/.config/hive/agents/$ACTOR.ssh" ] && [ -f "$HOME/.config/hive/agents/known_hosts" ] \
+      || { echo "no git key for $ACTOR: the operator runs tools/git/install.sh" >&2; exit 2; }
+    case "$ACTOR" in reviewer.codex.*) ;; *)
+      [ -s "$HOME/.config/hive/claude-oauth-token" ] \
+        || { echo "no ~/.config/hive/claude-oauth-token: the operator runs 'claude setup-token' and saves it there" >&2; exit 2; } ;;
+    esac ;;
+  *) echo "unknown runtime $RUNTIME (host or container)" >&2; exit 2 ;;
+esac
 
 if [ ! -d "$DIR" ]; then
   mkdir -p "$DIR"
@@ -179,7 +199,7 @@ fi
 [ "${ROUTE_FACTS:-}" = none ] && ROUTE_FACTS='{}'
 # runtime: where the attempt runs, so the router's evidence from before and after Phase E
 # (containers, a separate OS user) stays apart. Today agents run on the host as the operator's user.
-REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND" --arg rt "${ROUTE_RUNTIME:-host}" \
+REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND" --arg rt "$RUNTIME" \
   --argjson facts "${ROUTE_FACTS:-{\}}" --argjson hint "${ROUTE_HINT:-null}" \
   --argjson author "$AUTHOR" --argjson history "$HISTORY" --argjson override "${ROUTE_OVERRIDE:-null}" \
   '{task: $t, attempt: $a, reason: $r, runtime: $rt, facts: ({kind: $k} + $facts), tools_needed: true}
@@ -247,7 +267,7 @@ esac
 printf '%s' "$DEC" | hr manifest - --cwd "$DIR" --output "$OUT" > "$RS/$PREFIX.$n.attempt.json"
 
 cat > "$DIR/hive.env" <<EOF
-export HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY HIVE_VIA=$HARNESS:$ACTOR
+export HIVE_URL=http://$H:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY HIVE_VIA=$HARNESS:$ACTOR
 export HIVEPIN_REPOSITORY_REGISTRY_PATH=$DIR/registry.json
 export PATH=/home/omegahive/.local/bin:\$PATH
 EOF
@@ -259,7 +279,7 @@ CAP=(); [ "$ROLE" = reviewer ] && CAP=(timeout --kill-after=30s 90m)
 # asking for the route's alias, its route_id.
 GW=(); GWENV=()
 if [ "$(jq -r '.via_gateway // false' <<<"$DEC")" = true ]; then
-  GWURL=http://127.0.0.1:4000
+  GWURL=http://$H:4000
   # The worker key only calls models; the gateway's master key never reaches an agent.
   HIVE_GATEWAY_KEY=$(sed -n 's/^HIVE_WORKER_KEY=//p' "$HOME/.config/hive/gateway.env")
   MODEL=$(jq -r .route_id <<<"$DEC")
@@ -274,28 +294,65 @@ if [ "$(jq -r '.via_gateway // false' <<<"$DEC")" = true ]; then
                -c 'model_provider="hivegw"') ;;
   esac
 fi
+ALLOWLIST=/home/omegahive/repos/1-hive/deploy/review-allowlist.json
+if [ "$RUNTIME" = host ]; then
+  RUN=(env "${GWENV[@]}" "${CAP[@]}")
+  WSDIR=(--add-dir /home/omegahive/repos/hive-workspace.git)   # codex: the workspace remote
+else
+  A=$HOME/.config/hive/agents
+  CNAME=hive-$(tr . - <<<"$ATTEMPT")
+  # Clones' remotes are the bare repositories' host paths; in the container, git reaches them
+  # over SSH as this actor (tools/git/hive-git-shell, whose pre-receive hook limits its pushes).
+  CENV=(-e GIT_CONFIG_COUNT=1 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@$H/home/omegahive/repos/.insteadOf"
+        -e GIT_CONFIG_VALUE_0=/home/omegahive/repos/
+        -e "GIT_AUTHOR_NAME=$ACTOR" -e "GIT_AUTHOR_EMAIL=$ACTOR@1-hive.invalid"
+        -e "GIT_COMMITTER_NAME=$ACTOR" -e "GIT_COMMITTER_EMAIL=$ACTOR@1-hive.invalid")
+  for kv in "${GWENV[@]}"; do CENV+=(-e "$kv"); done
+  CRED=()
+  case "$HARNESS" in
+    claude-code*)
+      # A long-lived token (`claude setup-token`), not the operator's own login, whose refresh
+      # would race the host's.
+      # Passed by name from this environment, so it isn't on a command line.
+      if [ "${#GWENV[@]}" -eq 0 ]; then
+        export CLAUDE_CODE_OAUTH_TOKEN; CLAUDE_CODE_OAUTH_TOKEN=$(cat "$HOME/.config/hive/claude-oauth-token")
+        CRED=(-e CLAUDE_CODE_OAUTH_TOKEN)
+      fi ;;
+    codex) CRED=(-v "$HOME/.codex:/root/.codex") ;;   # the shared login, refreshed in place
+  esac
+  CAPC=(); [ "$ROLE" = reviewer ] && CAPC=(--timeout 5400)
+  RUN=(podman run --rm --name "$CNAME" --init "${CAPC[@]}"
+       --network slirp4netns:allow_host_loopback=true
+       --device /dev/fuse --device /dev/net/tun
+       --security-opt label=disable --security-opt seccomp=unconfined --security-opt 'unmask=/proc/*'
+       -v "$DIR:$DIR" -w "$DIR" -v "$KEY:$KEY:ro"
+       -v "$A/$ACTOR.ssh:/root/.ssh/id_ed25519:ro" -v "$A/known_hosts:/root/.ssh/known_hosts:ro"
+       -v "$ALLOWLIST:$ALLOWLIST:ro" "${CRED[@]}" "${CENV[@]}" localhost/1hive-agent:latest)
+  WSDIR=()
+  echo "$CNAME" > "$RS/$PREFIX.$n.container"   # the supervisor stops it by name
+fi
 case "$HARNESS" in
   claude-code)
     # Print mode, not --bg: nothing can wait on a permission prompt overnight.
     # A refused action is returned to the agent, which takes another route.
-    nohup env "${GWENV[@]}" "${CAP[@]}" claude -p --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} --permission-mode auto \
+    nohup "${RUN[@]}" claude -p --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} --permission-mode auto \
       --output-format stream-json --verbose "$(cat KICKOFF.md)" > "$OUT" 2> "${OUT%.*}.err" &
     echo "$!" > "$RS/$PREFIX.$n.pid"   # the supervisor finds the attempt's process here
-    echo "pid:$! log $OUT" ;;
+    echo "pid:$! log $OUT ($RUNTIME)" ;;
   claude-code-allowlist)
     # No model judges this route's actions (its own model would, in auto mode): a fixed allow list,
     # everything else denied (deploy/review-allowlist.json; table v14).
-    nohup env "${GWENV[@]}" "${CAP[@]}" claude -p --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} --permission-mode dontAsk \
-      --settings /home/omegahive/repos/1-hive/deploy/review-allowlist.json \
+    nohup "${RUN[@]}" claude -p --model "$MODEL" ${EFFORT:+--effort "$EFFORT"} --permission-mode dontAsk \
+      --settings "$ALLOWLIST" \
       --output-format stream-json --verbose "$(cat KICKOFF.md)" > "$OUT" 2> "${OUT%.*}.err" &
     echo "$!" > "$RS/$PREFIX.$n.pid"
-    echo "pid:$! log $OUT" ;;
+    echo "pid:$! log $OUT ($RUNTIME)" ;;
   codex)
-    nohup env "${GWENV[@]}" "${CAP[@]}" codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" "${GW[@]}" \
+    nohup "${RUN[@]}" codex exec --approve-for-me --skip-git-repo-check --cd "$DIR" "${GW[@]}" \
       -m "$MODEL" ${EFFORT:+-c model_reasoning_effort="$EFFORT"} \
-      --add-dir /home/omegahive/repos/hive-workspace.git --output-last-message "$DIR/codex-last-message.md" \
+      "${WSDIR[@]}" --output-last-message "$DIR/codex-last-message.md" \
       - < KICKOFF.md > "$OUT" 2>&1 &
     echo "$!" > "$RS/$PREFIX.$n.pid"   # the supervisor finds the attempt's process here
-    echo "codex pid $! log $OUT" ;;
+    echo "codex pid $! log $OUT ($RUNTIME)" ;;
   *) echo "router chose harness $HARNESS, which this launcher can't start" >&2; exit 3 ;;
 esac
