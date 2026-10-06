@@ -61,7 +61,7 @@ case "$RUNTIME" in
     [ -f "$HOME/.config/hive/agents/$ACTOR.ssh" ] && [ -f "$HOME/.config/hive/agents/known_hosts" ] \
       || { echo "no git key for $ACTOR: the operator runs tools/git/install.sh" >&2; exit 2; }
     case "$ACTOR" in reviewer.codex.*) ;; *)
-      [ -s "$HOME/.config/hive/claude-oauth-token" ] \
+      grep -q '[^[:space:]]' "$HOME/.config/hive/claude-oauth-token" 2>/dev/null \
         || { echo "no ~/.config/hive/claude-oauth-token: the operator runs 'claude setup-token' and saves it there" >&2; exit 2; } ;;
     esac ;;
   *) echo "unknown runtime $RUNTIME (host or container)" >&2; exit 2 ;;
