@@ -29,7 +29,8 @@ setup() {
   cp "$REPO/docs/chief-of-staff.md" "$D/CLAUDE.md"
   printf '%s\n' '{"mcpServers": {"hive": {"command": "/opt/hive-mcp/venv/bin/python", "args": ["/opt/hive-mcp/hive-mcp.py"]}}}' > "$D/mcp.json"
   jq '.repositories.workspace.local_path = "/cos/workspace"' "$REPO/deploy/registry.json" > "$D/registry.json"
-  setfacl -R -m "u:$U:rwX,d:u:$U:rwX,d:u:$USER:rwX" "$D"
+  # Files cos created are its own (and already carry the default ACL): skip those.
+  setfacl -R -m "u:$U:rwX,d:u:$U:rwX,d:u:$USER:rwX" "$D" 2>/dev/null || true
   local want; want=$(podman image inspect --format '{{.Id}}' localhost/1hive-agent:latest)
   if [ "$("${P[@]}" image inspect --format '{{.Id}}' localhost/1hive-agent:latest 2>/dev/null)" != "$want" ]; then
     podman save localhost/1hive-agent:latest | "${P[@]}" load -q >/dev/null
