@@ -324,7 +324,7 @@ else
     codex) CRED=(-v "$HOME/.codex:/root/.codex") ;;   # the shared login, refreshed in place
   esac
   CAPC=(); [ "$ROLE" = reviewer ] && CAPC=(--timeout 5400)
-  RUN=(podman run --rm --name "$CNAME" --init "${CAPC[@]}"
+  RUN=(podman run --rm -i --name "$CNAME" --init "${CAPC[@]}"   # -i: codex reads its prompt on stdin
        --network slirp4netns:allow_host_loopback=true
        --device /dev/fuse --device /dev/net/tun
        # Capabilities over the container's own namespaces only (rootless: nothing beyond the operator's
