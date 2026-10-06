@@ -325,7 +325,8 @@ else
       podman save localhost/1hive-agent:latest | "${P[@]}" load -q >/dev/null
     fi
     # Only this task's folder: the user may enter and change it; what it creates stays the operator's too.
-    setfacl -R -m "u:$AU:rwX,d:u:$AU:rwX,d:u:$USER:rwX" "$DIR"
+    # Files the agent created are its own (and already carry the default ACL): skip those.
+    setfacl -R -m "u:$AU:rwX,d:u:$AU:rwX,d:u:$USER:rwX" "$DIR" 2>/dev/null || true
   else
     P=(podman)
   fi
