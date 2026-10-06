@@ -161,7 +161,7 @@ print(json.dumps({"family": t.routes[rid]["family"], "tier": d.get("tier") or t.
 fi
 # A high-stakes order asks for a higher review tier: "Review tier: strong" in the order file.
 if [ "$ROLE" = reviewer ] && [ -z "${ROUTE_HINT:-}" ]; then
-  ORDERS=$(grep -o "projects/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u | sed "s#^#$DIR/workspace/#")
+  ORDERS=$(grep -o "projects/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u | sed "s#^#$DIR/workspace/#" || true)   # a kickoff may name no order
   RT=$(grep -h -o -i -E '^Review tier: *(light|standard|strong)' $ORDERS /dev/null 2>/dev/null \
        | head -1 | sed -E 's/.*: *//' | tr 'A-Z' 'a-z' || true)   # no such line: no hint
   [ -n "$RT" ] && ROUTE_HINT=$(jq -nc --arg t "$RT" '{tier: $t, reason: "the order asks for this review tier"}')
@@ -172,7 +172,7 @@ fi
 # task without either is refused, so no task runs on the strong default because its facts were
 # forgotten; ROUTE_FACTS=none launches it without facts on purpose.
 if [ "$ROLE" = worker ] && [ -z "${ROUTE_FACTS:-}" ]; then
-  ORDERS=$(grep -o "projects/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u | sed "s#^#$DIR/workspace/#")
+  ORDERS=$(grep -o "projects/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u | sed "s#^#$DIR/workspace/#" || true)   # a kickoff may name no order
   FL=$(grep -h -i -E '^Route facts:' $ORDERS /dev/null 2>/dev/null | head -1 | sed -E 's/^[^:]*: *//' || true)
   if [ -n "$FL" ]; then
     ROUTE_FACTS=$(python3 - "$FL" <<'EOF'
