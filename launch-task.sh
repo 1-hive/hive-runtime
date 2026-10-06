@@ -327,6 +327,10 @@ else
   RUN=(podman run --rm --name "$CNAME" --init "${CAPC[@]}"
        --network slirp4netns:allow_host_loopback=true
        --device /dev/fuse --device /dev/net/tun
+       # Capabilities over the container's own namespaces only (rootless: nothing beyond the operator's
+       # user on the host). Nested Podman needs them for bridge networks (netavark enters the netns it
+       # creates), e.g. mtg-player's human-play sandbox (cp-1-quickstart).
+       --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN
        --security-opt label=disable --security-opt seccomp=unconfined --security-opt 'unmask=/proc/*'
        -v "$DIR:$DIR" -w "$DIR" -v "$KEY:$KEY:ro"
        -v "$A/$ACTOR.ssh:/root/.ssh/id_ed25519:ro" -v "$A/known_hosts:/root/.ssh/known_hosts:ro"
