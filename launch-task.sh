@@ -53,7 +53,9 @@ KEY=$HOME/.config/hive/agents/$ACTOR.key
 # Where the attempt runs: `host`, as the operator's user, or `container`: its own rootless Podman
 # container (PLAN Phase E 1; SPEC §6.6), holding only this task's folder, this actor's record and
 # git keys, and the harness's credentials. Default: deploy/runtime. Reported to the router.
-RUNTIME=${ROUTE_RUNTIME:-$(cat /home/omegahive/repos/1-hive/deploy/runtime 2>/dev/null || echo host)}
+# A task folder keeps the runtime it was first launched with, so a supervisor restart doesn't move it.
+RTF=$HOME/work/1hive/.route/$(basename "$DIR")/runtime
+RUNTIME=${ROUTE_RUNTIME:-$(cat "$RTF" 2>/dev/null || cat /home/omegahive/repos/1-hive/deploy/runtime 2>/dev/null || echo host)}
 case "$RUNTIME" in
   host) H=127.0.0.1 ;;
   container)   # from a container, the host's loopback (record, model gateway, sshd) is 10.0.2.2
@@ -66,6 +68,7 @@ case "$RUNTIME" in
     esac ;;
   *) echo "unknown runtime $RUNTIME (host or container)" >&2; exit 2 ;;
 esac
+mkdir -p "$(dirname "$RTF")"; echo "$RUNTIME" > "$RTF"
 
 if [ ! -d "$DIR" ]; then
   mkdir -p "$DIR"
