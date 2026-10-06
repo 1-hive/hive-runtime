@@ -235,14 +235,21 @@ echo "route: $(jq -r '"\(.route_id) (\(.model)\(if .effort then ", " + .effort e
 jq -c '{attempt, route_id, tier, pool}' <<<"$DEC" >> "$HIST"
 
 # The record's SPEC §6.2: an actor re-declares when its configuration changes. When the
-# router picks a different harness or model than the actor's current declaration, the
-# launcher re-declares it, signed with the actor's own key, before the attempt starts.
+# router picks a different harness or model than the actor's current declaration, or the attempt
+# runs in a different sandbox, the launcher re-declares it, signed with the actor's own key,
+# before the attempt starts.
 ROUTE_DESC=$(jq -r '"\(.route_id): \(.model)\(if .effort then " (" + .effort + ")" else "" end)"' <<<"$DEC")
+case "$RUNTIME" in
+  host) SANDBOX="none (operator user)" ;;
+  container) id "hive-${ACTOR//./-}" >/dev/null 2>&1 \
+      && SANDBOX="rootless container, OS user hive-${ACTOR//./-}; only record, model gateway and sshd reachable on the host" \
+      || SANDBOX="rootless container, operator user" ;;
+esac
 CUR=$(HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY hive actors 2>/dev/null \
   | jq -c --arg a "$ACTOR" '.[] | select(.id == $a) | .declaration' 2>/dev/null || true)
-if [ -n "$CUR" ] && [ "$(jq -r '.harness + "|" + .model_route' <<<"$CUR")" != "$HARNESS|$ROUTE_DESC" ]; then
-  NEWDECL=$(jq -c --arg a "$ACTOR" --arg h "$HARNESS" --arg m "$ROUTE_DESC" \
-    '{actor_id: $a, declaration: (. + {harness: $h, model_route: $m})}' <<<"$CUR")
+if [ -n "$CUR" ] && [ "$(jq -r '.harness + "|" + .model_route + "|" + .sandbox' <<<"$CUR")" != "$HARNESS|$ROUTE_DESC|$SANDBOX" ]; then
+  NEWDECL=$(jq -c --arg a "$ACTOR" --arg h "$HARNESS" --arg m "$ROUTE_DESC" --arg s "$SANDBOX" \
+    '{actor_id: $a, declaration: (. + {harness: $h, model_route: $m, sandbox: $s})}' <<<"$CUR")
   HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY HIVE_VIA=launcher:$ACTOR \
     hive emit actor.declared --data "$NEWDECL" >/dev/null 2>&1 \
     && echo "declared: $ACTOR now $HARNESS, $ROUTE_DESC" \
