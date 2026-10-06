@@ -23,7 +23,8 @@
 #                     so a high-stakes task's reviews ask for a higher tier than the author's.
 #   ROUTE_LAST_CLASS  failure class of this role's previous attempt on the task (§5):
 #                     outage, capacity, truncated, missing_info, failed_check, stalled,
-#                     indeterminate, interrupted
+#                     indeterminate, interrupted, checkpoint (the worker asked to be routed again;
+#                     the supervisor passes it with the facts or hint the checkpoint set)
 #   ROUTE_REASON      reassign, to move off the previous route
 #   EXTRA_REPOS       more registered repositories the task changes (e.g. "mtg-colosseo"), each
 #                     mirrored at ~/repos/<name>.git: a worker gets <name> on hive/<task> from main

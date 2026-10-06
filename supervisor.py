@@ -13,10 +13,17 @@ for each task a worker holds, applies the ladder:
 4. A reviewer's process ended without a verdict       -> task.escalated to the chief
    of staff (`other`).
 
+A worker may end its attempt at a routing checkpoint (worker contract, "Routing
+checkpoints"; hive-route ROUTING.md §4.5): it leaves route-checkpoint.json in its task
+folder and a checkpoint report on the record. The supervisor checks the request, keeps it
+in the task's route state (outside the worker's folder), and restarts the worker with class
+`checkpoint` and the facts or hint as they now stand, so the router recomputes the tier.
+Checkpoints don't count as failed attempts; a task may make MAX_CHECKPOINTS of them.
+
 A restart's context is generated from the record (order, last reports, reason),
 committed to the workspace and pinned on task.restarted, then the worker is
 relaunched through tools/launch-task.sh with ROUTE_LAST_CLASS and the task's
-last supplied ROUTE_FACTS. Tasks with an open escalation are skipped until the chief
+first supplied ROUTE_FACTS, with its accepted checkpoints applied. Tasks with an open escalation are skipped until the chief
 of staff acts on the task after it (e.g. assigns a new review), or, when a reviewer ended
 without a verdict, until a review is recorded: only the chief of staff or the operator may
 resolve an escalation, but these later events show it was handled.
@@ -49,6 +56,12 @@ ENV = {**os.environ, "HIVE_URL": "http://127.0.0.1:8470", "HIVE_ID": "1-hive",
 GRACE = 600          # seconds past the check-in interval before acting
 MAX_ATTEMPTS = 4     # attempt 1 + 3 restarts, then escalate
 MAX_NUDGES = 2
+MAX_CHECKPOINTS = 3  # routing checkpoints per task
+CP_FILE = "route-checkpoint.json"
+# What a checkpoint may change: facts the worker learns from the work. verification,
+# consequence and leverage describe the task's stakes and stay as the chief of staff set them.
+CP_FACTS = {"specification": ("explicit", "partial", "goal_only"), "scope": ("single", "few", "many")}
+TIERS = ("light", "standard", "strong")
 
 
 def log(msg: str) -> None:
@@ -153,6 +166,79 @@ def supplied_facts(task: str) -> str | None:
     return json.dumps(facts) if facts else None
 
 
+def checkpoints(task: str) -> list[dict]:
+    """The task's accepted routing checkpoints, oldest first."""
+    p = ROUTE / task / "checkpoints.jsonl"
+    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()] if p.exists() else []
+
+
+def route_env(task: str) -> dict:
+    """ROUTE_FACTS and ROUTE_HINT for the task's next attempt: the first supplied facts with each
+    accepted checkpoint's facts applied in order, and the latest checkpoint's hint (an `up`
+    checkpoint's hint holds until a later `down` one)."""
+    base = supplied_facts(task)
+    facts = json.loads(base) if base else {}
+    cps = checkpoints(task)
+    for cp in cps:
+        facts.update(cp.get("facts") or {})
+    env = {"ROUTE_FACTS": json.dumps(facts)} if facts else {}
+    if cps and cps[-1].get("hint"):
+        env["ROUTE_HINT"] = json.dumps(cps[-1]["hint"])
+    return env
+
+
+def take_checkpoint(t: dict, n: int, since: float, events: list[dict], dry: bool) -> dict | None:
+    """The worker's routing checkpoint request from attempt n, if valid. Moves the request out of
+    the worker's folder either way, so it's read once."""
+    task = t["id"]
+    src = ROOT / task / CP_FILE
+    if not src.is_file() or src.stat().st_mtime < since - 5:
+        return None
+    problem, cp = None, None
+    try:
+        req = json.loads(src.read_text())
+    except (OSError, ValueError) as e:
+        req, problem = {}, f"unreadable ({e})"
+    if not problem and not isinstance(req, dict):
+        problem = "not a JSON object"
+    if not problem:
+        direction, reason = req.get("direction"), req.get("reason")
+        if direction not in ("down", "up"):
+            problem = "direction must be down or up"
+        elif not isinstance(reason, str) or not reason.strip() or len(reason) > 300:
+            problem = "a one-line reason (at most 300 characters) is required"
+        elif len(checkpoints(task)) >= MAX_CHECKPOINTS:
+            problem = f"the task already made {MAX_CHECKPOINTS} checkpoints"
+        elif not any(e["type"] == "task.reported" and e["actor"]["id"] == t["owner"]
+                     and (ts(e["recorded_at"]) or 0) >= since for e in events):
+            problem = "no report on the record from this attempt (the handoff)"
+        elif direction == "down":
+            facts = req.get("facts") if isinstance(req.get("facts"), dict) else {}
+            bad = [k for k, v in facts.items() if k not in CP_FACTS or v not in CP_FACTS[k]]
+            if bad or not facts:
+                problem = (f"facts may only set {', '.join(CP_FACTS)}" if bad
+                           else "a down checkpoint names the facts that changed")
+            else:
+                cp = {"attempt": n, "direction": "down", "reason": reason.strip(), "facts": facts}
+        else:
+            if req.get("tier") not in TIERS:
+                problem = f"tier must be one of {', '.join(TIERS)}"
+            else:
+                cp = {"attempt": n, "direction": "up", "reason": reason.strip(),
+                      "hint": {"tier": req["tier"], "reason": f"worker checkpoint: {reason.strip()}"}}
+    if dry:
+        log(f"DRY checkpoint {task}: {cp or problem}")
+        return cp
+    src.rename(ROUTE / task / f"checkpoint.{n}.json")
+    if cp is None:
+        log(f"checkpoint {task} ignored: {problem}")
+        return None
+    cp["at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with open(ROUTE / task / "checkpoints.jsonl", "a") as f:
+        f.write(json.dumps(cp) + "\n")
+    return cp
+
+
 def emit(etype: str, task: str, data: dict, refs: list[str] = (), dry: bool = False) -> None:
     args = ["emit", etype, "--task", task, "--data", json.dumps(data)]
     for r in refs:
@@ -175,6 +261,9 @@ def restart(t: dict, events: list[dict], reason: str, cls: str, dry: bool) -> No
         review_note = (f"\n**The independent review of your last result said `{last_review['data']['verdict']}`.** "
                        f"Read it first and address every finding: `{{DIR}}/workspace/{rp}` (pull the workspace). "
                        "Then post a new result.\n")
+    checkpoint_note = ("\n**This is a routing checkpoint, not a failure:** the previous attempt asked to be routed "
+                       "again, so this attempt may run on another model. Your latest report is the handoff: "
+                       "continue from it.\n") if cls == "checkpoint" else ""
     project = t.get("project") or "mtg-player"
     rel = f"projects/{project}/runs/{task}/restart-{attempt + 1}.md"
     body = f"""# Restart context: {task}, attempt {attempt + 1}
@@ -183,7 +272,7 @@ Written by the supervisor from the record at {dt.datetime.now(dt.timezone.utc):%
 
 You are **{t['owner']}**, restarted by the supervisor on task **{task}** ("{t['title']}", goal `{t.get('goal')}`).
 **Why:** {reason}.
-{review_note}
+{review_note}{checkpoint_note}
 Your earlier work is intact: your branch and task folder `{{DIR}}` (clones, hive.env, contract) are as you left them.
 
 Read, in order:
@@ -208,10 +297,7 @@ Then: `source {{DIR}}/hive.env`, pull the workspace, post a checkpoint that says
     subprocess.run(["hive-pin", "mint", "workspace", rel, "--output", str(pin)], check=True,
                    capture_output=True, env=ENV)
     emit("task.restarted", task, {"reason": reason}, [f"context={pin}"])
-    env = {**os.environ, "ROUTE_LAST_CLASS": cls}
-    facts = supplied_facts(task)
-    if facts:
-        env["ROUTE_FACTS"] = facts
+    env = {**os.environ, "ROUTE_LAST_CLASS": cls, **route_env(task)}
     r = subprocess.run([str(LAUNCH), "worker", task, t["owner"], str(path)], capture_output=True, text=True, env=env)
     log(f"relaunch {task}: rc={r.returncode} {r.stdout.strip()} {r.stderr.strip()[-300:]}")
     if r.returncode != 0:
@@ -265,11 +351,18 @@ def tick(dry: bool) -> None:
         if not alive(pid):
             if now - pid_start < 120:
                 continue
-            if attempt >= MAX_ATTEMPTS:
+            hist = json.loads(hive("task", task))["events"]
+            if (t.get("latest_review") or {}).get("verdict") not in ("failed", "needs_information"):
+                cp = take_checkpoint(t, n, pid_start, hist, dry)
+                if cp:
+                    restart(t, hist, f"the worker asked to be routed again ({cp['direction']}): {cp['reason']}",
+                            "checkpoint", dry)
+                    continue
+            # Checkpoints are not failed attempts.
+            if attempt - len(checkpoints(task)) >= MAX_ATTEMPTS:
                 emit("task.escalated", task, {"to": "chief_of_staff", "code": "repeated_failure",
                                               "reason": f"{attempt} attempts; the last worker process ended without a result"}, dry=dry)
                 continue
-            hist = json.loads(hive("task", task))["events"]
             cls = failure_class(task, "worker", n)
             why = ("the worker hit a usage or quota limit" if cls == "capacity"
                    else "the worker's process ended without posting a result")
@@ -287,7 +380,7 @@ def tick(dry: bool) -> None:
                 emit("task.nudged", task, {"reason": f"no activity for {int((now - since) / 60)} min "
                                                      f"(check-in every {every // 60} min); worker process alive"}, dry=dry)
             continue
-        if attempt >= MAX_ATTEMPTS:
+        if attempt - len(checkpoints(task)) >= MAX_ATTEMPTS:
             emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck",
                                           "reason": f"silent after {nudges} nudges and {attempt} attempts"}, dry=dry)
             continue
