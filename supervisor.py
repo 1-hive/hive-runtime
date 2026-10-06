@@ -119,12 +119,25 @@ def alive(pid: int | None) -> bool:
     return not Path(f"/proc/{pid}/status").read_text().count("State:\tZ")
 
 
+def descendants(pid: int) -> list[int]:
+    """Every process below pid, children first found. Walks the tree rather than process groups:
+    tools like `timeout` put their child in a group of its own (the sup-1-drill orphan)."""
+    out, todo = [], [pid]
+    while todo:
+        r = subprocess.run(["pgrep", "-P", str(todo.pop())], capture_output=True, text=True)
+        kids = [int(k) for k in r.stdout.split()]
+        out += kids
+        todo += kids
+    return out
+
+
 def stop(pid: int) -> None:
-    subprocess.run(["pkill", "-TERM", "-P", str(pid)], check=False)
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        pass
+    """Stops the attempt's whole process tree: the harness and anything it started."""
+    for p in [*descendants(pid), pid]:
+        try:
+            os.kill(p, signal.SIGTERM)
+        except OSError:
+            pass
 
 
 CAPACITY_SIGNS = ("out of credits", "session limit", "usage limit", "rate limit", "hit your limit",
