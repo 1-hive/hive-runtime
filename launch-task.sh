@@ -16,7 +16,7 @@
 #
 # The router (hive-route) picks the harness, model and effort for every attempt; the
 # route block below. Optional environment for the router (ROUTING.md §4):
-#   ROUTE_FACTS       JSON object of task facts, e.g. '{"specification":"explicit",
+#   ROUTE_FACTS       JSON object of task facts (default: the order's 'Route facts:' line, below), e.g. '{"specification":"explicit",
 #                     "verification":"independent","scope":"few","consequence":"reversible"}'
 #   ROUTE_HINT        JSON {"tier": ..., "reason": ...}: raises the tier, never lowers it.
 #                     For a reviewer, an order line "Review tier: strong" (or standard) sets it,
@@ -143,6 +143,40 @@ if [ "$ROLE" = reviewer ] && [ -z "${ROUTE_HINT:-}" ]; then
        | head -1 | sed -E 's/.*: *//' | tr 'A-Z' 'a-z' || true)   # no such line: no hint
   [ -n "$RT" ] && ROUTE_HINT=$(jq -nc --arg t "$RT" '{tier: $t, reason: "the order asks for this review tier"}')
 fi
+# A work order states the task's facts on a line of its own, e.g.
+#   Route facts: specification=explicit verification=independent scope=few consequence=reversible leverage=0
+# (any fact may be `unknown`). ROUTE_FACTS in the environment wins (restarts pass it). A new
+# task without either is refused, so no task runs on the strong default because its facts were
+# forgotten; ROUTE_FACTS=none launches it without facts on purpose.
+if [ "$ROLE" = worker ] && [ -z "${ROUTE_FACTS:-}" ]; then
+  ORDERS=$(grep -o "projects/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u | sed "s#^#$DIR/workspace/#")
+  FL=$(grep -h -i -E '^Route facts:' $ORDERS /dev/null 2>/dev/null | head -1 | sed -E 's/^[^:]*: *//' || true)
+  if [ -n "$FL" ]; then
+    ROUTE_FACTS=$(python3 - "$FL" <<'EOF'
+import json, sys
+ok = {"specification": ("explicit", "partial", "goal_only"), "verification": ("independent", "weak", "none"),
+      "scope": ("single", "few", "many"), "consequence": ("reversible", "costly")}
+facts = {}
+for item in sys.argv[1].replace(",", " ").split():
+    k, _, v = item.partition("=")
+    if v == "unknown" and (k in ok or k == "leverage"):
+        continue
+    if k in ok and v in ok[k]:
+        facts[k] = v
+    elif k == "leverage" and v.isdigit():
+        facts[k] = int(v)
+    else:
+        sys.exit(f"Route facts: bad item {item!r}")
+print(json.dumps(facts))
+EOF
+    ) || { echo "fix the order's Route facts line" >&2; exit 2; }
+  elif [ "$REASON" = new ]; then
+    echo "no route facts: add a 'Route facts:' line to the order (any fact may be unknown)," >&2
+    echo "or set ROUTE_FACTS (ROUTE_FACTS=none to launch without facts)" >&2
+    exit 2
+  fi
+fi
+[ "${ROUTE_FACTS:-}" = none ] && ROUTE_FACTS='{}'
 # runtime: where the attempt runs, so the router's evidence from before and after Phase E
 # (containers, a separate OS user) stays apart. Today agents run on the host as the operator's user.
 REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND" --arg rt "${ROUTE_RUNTIME:-host}" \
