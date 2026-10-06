@@ -63,7 +63,9 @@ chmod 755 /usr/local/bin/hive-agent-podman
 SUDOERS=/etc/sudoers.d/1hive-agents
 { echo "# 1-hive: the operator starts agent containers as the agents' own users (deploy/agent-users.sh)."
   echo "Defaults!/usr/local/bin/hive-agent-podman !requiretty"
-  echo "$OPERATOR ALL=($(IFS=,; echo "${USERS[*]}")) NOPASSWD: /usr/local/bin/hive-agent-podman"
+  # Every agent user there is, not only this run's (a later run may add one actor).
+  ALL=$(getent group hive | cut -d: -f4 | tr , '\n' | grep '^hive-' | sort -u | paste -sd,)
+  echo "$OPERATOR ALL=($ALL) NOPASSWD: /usr/local/bin/hive-agent-podman"
 } > "$SUDOERS.tmp"
 visudo -cf "$SUDOERS.tmp" >/dev/null && install -m 440 "$SUDOERS.tmp" "$SUDOERS"; rm -f "$SUDOERS.tmp"
 echo "done. Log out and back in (or 'newgrp hive') for $OPERATOR's new group to apply."
