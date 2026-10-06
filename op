@@ -30,6 +30,7 @@ need() { [ -n "${2:-}" ] || { echo "usage: op $1" >&2; exit 2; }; }
 cmd=${1:-inbox}; shift || true
 case "$cmd" in
   inbox)   "$HIVE" inbox --for operator ;;
+  cos)     exec /home/omegahive/repos/1-hive/tools/cos.sh attach ;;
   board)   "$HIVE" board ;;
   goal)    need "goal <id>" "${1:-}"; "$HIVE" goal "$1" ;;
   approve) need "approve <goal>" "${1:-}"; emit goal.approved "$1" ;;
