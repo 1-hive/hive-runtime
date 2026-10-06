@@ -3,7 +3,8 @@
 # - the pre-receive hook in every bare repository under ~/repos;
 # - an SSH key per agent (~/.config/hive/agents/<actor>.ssh), restricted in
 #   ~/.ssh/authorized_keys to `hive-git-shell <actor>` (no shell, no forwarding);
-# - ~/.config/hive/agents/known_hosts: the host's sshd as containers reach it (10.0.2.2).
+# - ~/.config/hive/agents/known_hosts: the host's sshd as containers reach it (127.0.0.1, relayed
+#   by tools/agent-ports.py).
 #   tools/git/install.sh [actor...]     (default: every agent key in ~/.config/hive/agents)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -19,5 +20,5 @@ for a in "${ACTORS[@]}"; do
   echo "command=\"$HERE/hive-git-shell $a\",restrict $(cut -d' ' -f1,2 "$A/$a.ssh.pub") hive-agent:$a" \
     >> "$HOME/.ssh/authorized_keys"
 done
-for f in /etc/ssh/ssh_host_*_key.pub; do echo "10.0.2.2 $(cut -d' ' -f1,2 "$f")"; done > "$A/known_hosts"
+for f in /etc/ssh/ssh_host_*_key.pub; do echo "127.0.0.1 $(cut -d' ' -f1,2 "$f")"; done > "$A/known_hosts"
 echo "hooks in $(ls -d "$HOME"/repos/*.git | wc -l) repositories; git keys for: ${ACTORS[*]}"

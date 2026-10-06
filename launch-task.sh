@@ -58,8 +58,10 @@ RTF=$HOME/work/1hive/.route/$(basename "$DIR")/runtime
 RUNTIME=${ROUTE_RUNTIME:-$(cat "$RTF" 2>/dev/null || cat /home/omegahive/repos/1-hive/deploy/runtime 2>/dev/null || echo host)}
 case "$RUNTIME" in
   host) H=127.0.0.1 ;;
-  container)   # from a container, the host's loopback (record, model gateway, sshd) is 10.0.2.2
-    H=10.0.2.2
+  container)   # in a container, the record, model gateway and sshd are relayed to its own loopback
+    H=127.0.0.1
+    [ -S "$HOME/work/1hive/.ports/record.sock" ] \
+      || { echo "agent ports aren't up: systemctl --user start 1-hive-agent-ports" >&2; exit 2; }
     [ -f "$HOME/.config/hive/agents/$ACTOR.ssh" ] && [ -f "$HOME/.config/hive/agents/known_hosts" ] \
       || { echo "no git key for $ACTOR: the operator runs tools/git/install.sh" >&2; exit 2; }
     case "$ACTOR" in reviewer.codex.*) ;; *)
@@ -365,7 +367,10 @@ else
   esac
   CAPC=(); [ "$ROLE" = reviewer ] && CAPC=(--timeout 5400)
   RUN=("${P[@]}" run --rm -i --name "$CNAME" --init "${CAPC[@]}"   # -i: codex reads its prompt on stdin
-       --network slirp4netns:allow_host_loopback=true
+       # No route to the host's loopback (its Postgres, everything else): only the record, model
+       # gateway and sshd, through tools/agent-ports.py's sockets, relayed by the image's hive-entry.
+       # keep-groups: the agent user's group `hive` opens the sockets' directory.
+       --network slirp4netns -v "$HOME/work/1hive/.ports:/run/hive-ports:ro" --group-add keep-groups
        --device /dev/fuse --device /dev/net/tun
        # Capabilities over the container's own namespaces only (rootless: nothing beyond its user
        # on the host). Nested Podman needs them for bridge networks (netavark enters the netns it

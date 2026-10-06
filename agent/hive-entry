@@ -1,0 +1,14 @@
+#!/bin/sh
+# Entry point of an agent container: relay the host services an agent may use from the
+# container's loopback to the Unix sockets mounted at /run/hive-ports (tools/agent-ports.py),
+# then run the agent. Without the mount, it just runs the command.
+P=/run/hive-ports
+if [ -d "$P" ]; then
+  socat TCP-LISTEN:8470,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:$P/record.sock &
+  socat TCP-LISTEN:4000,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:$P/gateway.sock &
+  socat TCP-LISTEN:22,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:$P/ssh.sock &
+  for port in 8470 4000 22; do   # listening before the agent starts
+    i=0; until socat -u OPEN:/dev/null TCP:127.0.0.1:$port 2>/dev/null || [ $i -ge 50 ]; do i=$((i+1)); sleep 0.1; done
+  done
+fi
+exec "$@"
