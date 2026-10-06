@@ -8,10 +8,13 @@ for each task a worker holds, applies the ladder:
 2. The worker is alive but silent past its check-in -> task.nudged (recorded; a
    print-mode worker can't receive messages). After 2 nudges with no activity,
    stop it and restart (class `stalled`).
-3. A task already restarted 3 times                   -> task.escalated to the chief
-   of staff (`repeated_failure`), and the supervisor leaves it alone.
+3. A task already restarted 3 times                   -> task.escalated to the
+   operator (`repeated_failure`: an interrupt, PLAN D15), and the supervisor leaves it alone.
 4. A reviewer's process ended without a verdict       -> task.escalated to the chief
    of staff (`other`).
+5. An active goal past a budget dimension              -> goal.escalated to the operator
+   (`budget_exceeded`), once per budget: usd_micros and tokens against the goal's `spent`,
+   wall_clock_seconds against the time since approval. Raising the budget re-arms it.
 
 A worker may end its attempt at a routing checkpoint (worker contract, "Routing
 checkpoints"; hive-route ROUTING.md §4.5): it leaves route-checkpoint.json in its task
@@ -26,7 +29,7 @@ relaunched through tools/launch-task.sh with ROUTE_LAST_CLASS and the task's
 first supplied ROUTE_FACTS, with its accepted checkpoints applied. Tasks with an open escalation are skipped until the chief
 of staff acts on the task after it (e.g. assigns a new review), or, when a reviewer ended
 without a verdict, until a review is recorded: only the chief of staff or the operator may
-resolve an escalation, but these later events show it was handled.
+resolve an escalation, but these later events (by either) show it was handled.
 
     supervisor.py [--interval 60] [--once] [--dry-run]
 """
@@ -252,8 +255,8 @@ def take_checkpoint(t: dict, n: int, since: float, events: list[dict], dry: bool
     return cp
 
 
-def emit(etype: str, task: str, data: dict, refs: list[str] = (), dry: bool = False) -> None:
-    args = ["emit", etype, "--task", task, "--data", json.dumps(data)]
+def emit(etype: str, task: str, data: dict, refs: list[str] = (), dry: bool = False, on: str = "task") -> None:
+    args = ["emit", etype, f"--{on}", task, "--data", json.dumps(data)]
     for r in refs:
         args += ["--ref", r]
     if dry:
@@ -324,13 +327,39 @@ def handled(task: str, esc: dict) -> bool:
     events = json.loads(hive("task", task))["events"]
     reviewer_died = str(esc.get("reason", "")).startswith("reviewer ")
     return any(e["position"] > esc.get("position", 0)
-               and (e["actor"]["class"] == "chief_of_staff" or (reviewer_died and e["type"] == "review.recorded"))
+               and (e["actor"]["class"] in ("chief_of_staff", "operator")
+                    or (reviewer_died and e["type"] == "review.recorded"))
                for e in events)
+
+
+BUDGETS = HOME / "budget-escalated.json"   # goal -> the budget it was last escalated for
+
+
+def check_budgets(state: dict, now: float, dry: bool) -> None:
+    """Escalate each active goal past a budget dimension to the operator, once per budget."""
+    try:
+        done = json.loads(BUDGETS.read_text())
+    except (OSError, ValueError):
+        done = {}
+    for g in state.get("goals", {}).values():
+        budget = g.get("budget") or {}
+        if g["status"] != "active" or not budget or g.get("escalation") or done.get(g["id"]) == budget:
+            continue
+        spent = {**(g.get("spent") or {}), "wall_clock_seconds": int(now - (ts(g.get("approved_at")) or now))}
+        over = [f"{k} {spent.get(k, 0)} of {v}" for k, v in budget.items() if spent.get(k, 0) > v]
+        if not over:
+            continue
+        emit("goal.escalated", g["id"], {"to": "operator", "code": "budget_exceeded",
+                                         "reason": "over budget: " + ", ".join(over)}, dry=dry, on="goal")
+        if not dry:
+            done[g["id"]] = budget
+            BUDGETS.write_text(json.dumps(done))
 
 
 def tick(dry: bool) -> None:
     state = json.loads(hive("state"))
     now = time.time()
+    check_budgets(state, now, dry)
     for t in state.get("tasks", {}).values():
         ext = t.get("ext") or {}
         if t["status"] not in ("assigned", "in_progress", "in_review"):
@@ -373,7 +402,7 @@ def tick(dry: bool) -> None:
                     continue
             # Checkpoints are not failed attempts.
             if attempt - len(checkpoints(task)) >= MAX_ATTEMPTS:
-                emit("task.escalated", task, {"to": "chief_of_staff", "code": "repeated_failure",
+                emit("task.escalated", task, {"to": "operator", "code": "repeated_failure",
                                               "reason": f"{attempt} attempts; the last worker process ended without a result"}, dry=dry)
                 continue
             cls = failure_class(task, "worker", n)
