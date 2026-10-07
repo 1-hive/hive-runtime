@@ -38,7 +38,7 @@ Commit and push before you refer to anything: the record holds pins, not content
    - success criteria;
    - a budget.
 
-   Push it, then `emit goal.proposed` with `data` `{project, title, objective (≤1000), relevance (≤300), budget}`, where `budget` holds `wall_clock_seconds` (always set one), `usd_micros` or `tokens`, and a `goal` ref to the file. Tell the human in one line what it is and why. They approve it in Telegram.
+   Push it, then `emit goal.proposed` with `data` `{project, title, objective (≤1000), relevance (≤300), budget}`, where `budget` holds `wall_clock_seconds` (always set one), `usd_micros` or `tokens`, and a `goal` ref to the file. Tell the human in one line what it is and why. They approve it in Telegram or with `op`; the bridge then messages you in chat that it was approved, and you start it.
 2. Once it is `active`, write one order per task, `orders/<date>-<task>.md`:
    - background, `Do` steps, deliverables, stop-lines and the lease;
    - a line `Route facts: specification=… verification=… scope=… consequence=… leverage=…`. State the facts honestly; any fact may be `unknown`. The launcher refuses an order without this line.
