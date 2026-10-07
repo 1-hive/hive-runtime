@@ -71,9 +71,17 @@ case "${1:-}" in
   chat)
     msg=$(cat)
     [ -n "$msg" ] || exit 0
-    # Continue the chat conversation; the first message starts it.
-    printf '%s' "$msg" | "${P[@]}" exec -i -w /cos/chat "$NAME" $CLAUDE -p --continue 2>/dev/null \
-      || printf '%s' "$msg" | "${P[@]}" exec -i -w /cos/chat "$NAME" $CLAUDE -p ;;
+    # Continue the chat conversation; the first message starts it. A turn is stopped
+    # inside the container after 15 minutes (killing the host side leaves it running),
+    # and a stopped turn isn't retried as a new conversation.
+    T="timeout -k 10 900"
+    rc=0
+    printf '%s' "$msg" | "${P[@]}" exec -i -w /cos/chat "$NAME" $T $CLAUDE -p --continue 2>/dev/null || rc=$?
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+      echo "(stopped after 15 minutes without a reply)"
+    elif [ "$rc" != 0 ]; then
+      printf '%s' "$msg" | "${P[@]}" exec -i -w /cos/chat "$NAME" $T $CLAUDE -p
+    fi ;;
   stop)
     "${P[@]}" stop -t 10 "$NAME" ;;
   *) sed -n '2,10p' "$0" >&2; exit 2 ;;
