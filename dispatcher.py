@@ -91,12 +91,26 @@ def hive(*args: str) -> str:
     return r.stdout
 
 
+def assigned_unlaunched(t: dict, events: list[dict]) -> str | None:
+    """The reviewer assigned to the current result whose launch never happened (no attempt pid
+    since the assignment), e.g. a launch that failed: retry it rather than call it reviewed."""
+    cur = (t.get("current_result") or {}).get("event_id")
+    asg = [e for e in events if e["type"] == "review.assigned" and (e.get("data") or {}).get("result_event") == cur]
+    if not asg:
+        return None
+    at = dt.datetime.fromisoformat(asg[-1]["recorded_at"].replace("Z", "+00:00")).timestamp()
+    pids = ROUTE.joinpath(f"{t['id']}-review").glob("review.*.pid")
+    return None if any(p.stat().st_mtime >= at for p in pids) else asg[-1]["data"]["reviewer"]
+
+
 def needs_review(t: dict, events: list[dict]) -> bool:
     cur = (t.get("current_result") or {}).get("event_id")
     if t["status"] != "in_review" or not cur or (t.get("ext") or {}).get("escalation"):
         return False
-    return not any(e["type"] in ("review.assigned", "review.recorded")
-                   and (e.get("data") or {}).get("result_event") == cur for e in events)
+    if any(e["type"] == "review.recorded" and (e.get("data") or {}).get("result_event") == cur for e in events):
+        return False
+    return not any(e["type"] == "review.assigned" and (e.get("data") or {}).get("result_event") == cur
+                   for e in events) or assigned_unlaunched(t, events) is not None
 
 
 def kickoff(t: dict, reviewer: str, state: dict) -> Path:
@@ -177,21 +191,25 @@ def fields(t: dict, state: dict) -> dict:
             "goal_path": (goal.get("goal_pin") or {}).get("path", "(see the order)")}
 
 
-def dispatch(t: dict, state: dict, dry: bool, retry_at: dict) -> None:
+def dispatch(t: dict, state: dict, dry: bool, retry_at: dict, events: list[dict]) -> None:
     task, res = t["id"], t["current_result"]
     if time.time() < retry_at.get(res["event_id"], 0):
         return
     author = res.get("author")
     repos = (t.get("ext") or {}).get("repos") or []
     extra = " ".join(r for r in repos if r != CODE_HOME)
-    for reviewer in (r for r in REVIEWERS if r != author):
+    again = assigned_unlaunched(t, events)   # already assigned, launch failed: relaunch, don't re-assign
+    for reviewer in ([again] if again else [r for r in REVIEWERS if r != author]):
         path = kickoff(t, reviewer, state)
         if dry:
-            log(f"DRY assign {reviewer} to {task} ({res['event_id']}), kickoff {path}")
+            log(f"DRY {'relaunch' if again else 'assign'} {reviewer} to {task} ({res['event_id']}), kickoff {path}")
             return
-        ev = json.loads(hive("emit", "review.assigned", "--task", task, "--data",
-                             json.dumps({"reviewer": reviewer, "result_event": res["event_id"]})))
-        log(f"review.assigned {task} -> {reviewer} at position {ev['position']}")
+        if again:
+            log(f"relaunch {task} -> {reviewer} (assigned, never started)")
+        else:
+            ev = json.loads(hive("emit", "review.assigned", "--task", task, "--data",
+                                 json.dumps({"reviewer": reviewer, "result_event": res["event_id"]})))
+            log(f"review.assigned {task} -> {reviewer} at position {ev['position']}")
         r = subprocess.run([str(LAUNCH), "reviewer", task, reviewer, str(path)], capture_output=True,
                            text=True, env={**os.environ, **({"EXTRA_REPOS": extra} if extra else {})})
         log(f"launch {task} {reviewer}: rc={r.returncode} {r.stdout.strip()[-200:]} {r.stderr.strip()[-300:]}")
@@ -223,7 +241,7 @@ def tick(dry: bool, retry_at: dict) -> None:
         elif t["status"] == "in_review":
             events = json.loads(hive("task", t["id"]))["events"]
             if needs_review(t, events):
-                dispatch(t, state, dry, retry_at)
+                dispatch(t, state, dry, retry_at, events)
 
 
 def main() -> None:

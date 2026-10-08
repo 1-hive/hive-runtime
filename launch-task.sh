@@ -29,7 +29,8 @@
 #   ROUTE_REASON      reassign, to move off the previous route
 #   EXTRA_REPOS       more registered repositories the task changes (e.g. "mtg-colosseo"), each
 #                     mirrored at ~/repos/<name>.git: a worker gets <name> on hive/<task> from main
-#                     (its base recorded in base.json), a reviewer gets hive/<task>.
+#                     (its base recorded in base.json), a reviewer gets hive/<task>, or main when
+#                     the task left that repo unchanged (no branch pushed).
 #   ROUTE_RUNTIME     host or container (default: deploy/runtime). The container runtime needs the
 #                     agent image (deploy/agent/build.sh), git keys (tools/git/install.sh) and, for
 #                     Claude Code, ~/.config/hive/claude-oauth-token (`claude setup-token`).
@@ -93,7 +94,9 @@ if [ ! -d "$DIR" ]; then
       jq --arg r "$R" --arg c "$(git -C "$DIR/$R" rev-parse HEAD)" '. + {($r): $c}' "$DIR/base.json" > "$DIR/base.json.tmp"
       mv "$DIR/base.json.tmp" "$DIR/base.json"
     else
-      git clone -q -b "hive/$TASK" "/home/omegahive/repos/$R.git" "$DIR/$R"
+      # No branch when the task left this repo unchanged (its code pin equals its base): review main.
+      git clone -q -b "hive/$TASK" "/home/omegahive/repos/$R.git" "$DIR/$R" 2>/dev/null \
+        || git clone -q "/home/omegahive/repos/$R.git" "$DIR/$R"
     fi
   done
   if [ -d "$SEED_BUILD" ]; then
