@@ -17,6 +17,11 @@ as actor `dispatcher` (class coordinator, its own key) and:
 3. if the router has no route for that reviewer now (launcher exit 3: capacity, or the
    review-family rule), tries the next one; if none can run, retries after RETRY seconds.
 
+An assigned reviewer is relaunched (not re-assigned) when its launch never happened, or when
+its process ended without a verdict on a usage or quota limit (class `capacity`: the launcher
+then holds that pool, so the router picks another or waits; the supervisor tells the operator
+if it keeps happening).
+
 Skipped: tasks with an open escalation (the chief of staff is handling them). The verdict
 goes straight to the record; a failed review restarts the worker (supervisor), a passed
 one waits for the chief of staff to close the task.
@@ -34,6 +39,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+from supervisor import alive, failure_class, latest_attempt
 
 ROOT = Path.home() / "work" / "1hive"
 HOME = ROOT / ".dispatcher"
@@ -91,16 +98,23 @@ def hive(*args: str) -> str:
     return r.stdout
 
 
-def assigned_unlaunched(t: dict, events: list[dict]) -> str | None:
-    """The reviewer assigned to the current result whose launch never happened (no attempt pid
-    since the assignment), e.g. a launch that failed: retry it rather than call it reviewed."""
+def relaunch_of(t: dict, events: list[dict]) -> tuple[str, str | None] | None:
+    """(reviewer, class) for the reviewer assigned to the current result that must be launched
+    again: its launch never happened (no attempt pid since the assignment; class None), or its
+    process ended without a verdict on a usage limit (class `capacity`)."""
     cur = (t.get("current_result") or {}).get("event_id")
     asg = [e for e in events if e["type"] == "review.assigned" and (e.get("data") or {}).get("result_event") == cur]
     if not asg:
         return None
+    rv = asg[-1]["data"]["reviewer"]
     at = dt.datetime.fromisoformat(asg[-1]["recorded_at"].replace("Z", "+00:00")).timestamp()
     pids = ROUTE.joinpath(f"{t['id']}-review").glob("review.*.pid")
-    return None if any(p.stat().st_mtime >= at for p in pids) else asg[-1]["data"]["reviewer"]
+    if not any(p.stat().st_mtime >= at for p in pids):
+        return rv, None
+    att = latest_attempt(t["id"], "review")
+    if att and not alive(att[1]) and failure_class(t["id"], "review", att[0]) == "capacity":
+        return rv, "capacity"
+    return None
 
 
 def needs_review(t: dict, events: list[dict]) -> bool:
@@ -110,7 +124,7 @@ def needs_review(t: dict, events: list[dict]) -> bool:
     if any(e["type"] == "review.recorded" and (e.get("data") or {}).get("result_event") == cur for e in events):
         return False
     return not any(e["type"] == "review.assigned" and (e.get("data") or {}).get("result_event") == cur
-                   for e in events) or assigned_unlaunched(t, events) is not None
+                   for e in events) or relaunch_of(t, events) is not None
 
 
 def kickoff(t: dict, reviewer: str, state: dict) -> Path:
@@ -198,20 +212,21 @@ def dispatch(t: dict, state: dict, dry: bool, retry_at: dict, events: list[dict]
     author = res.get("author")
     repos = (t.get("ext") or {}).get("repos") or []
     extra = " ".join(r for r in repos if r != CODE_HOME)
-    again = assigned_unlaunched(t, events)   # already assigned, launch failed: relaunch, don't re-assign
-    for reviewer in ([again] if again else [r for r in REVIEWERS if r != author]):
+    again = relaunch_of(t, events)   # already assigned, not running: relaunch, don't re-assign
+    for reviewer in ([again[0]] if again else [r for r in REVIEWERS if r != author]):
         path = kickoff(t, reviewer, state)
         if dry:
             log(f"DRY {'relaunch' if again else 'assign'} {reviewer} to {task} ({res['event_id']}), kickoff {path}")
             return
         if again:
-            log(f"relaunch {task} -> {reviewer} (assigned, never started)")
+            log(f"relaunch {task} -> {reviewer} ({'hit a usage limit' if again[1] else 'assigned, never started'})")
         else:
             ev = json.loads(hive("emit", "review.assigned", "--task", task, "--data",
                                  json.dumps({"reviewer": reviewer, "result_event": res["event_id"]})))
             log(f"review.assigned {task} -> {reviewer} at position {ev['position']}")
         r = subprocess.run([str(LAUNCH), "reviewer", task, reviewer, str(path)], capture_output=True,
-                           text=True, env={**os.environ, **({"EXTRA_REPOS": extra} if extra else {})})
+                           text=True, env={**os.environ, **({"EXTRA_REPOS": extra} if extra else {}),
+                                           **({"ROUTE_LAST_CLASS": again[1]} if again and again[1] else {})})
         log(f"launch {task} {reviewer}: rc={r.returncode} {r.stdout.strip()[-200:]} {r.stderr.strip()[-300:]}")
         if r.returncode == 0:
             return

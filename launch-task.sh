@@ -26,6 +26,8 @@
 #                     outage, capacity, truncated, missing_info, failed_check, stalled,
 #                     indeterminate, interrupted, checkpoint (the worker asked to be routed again;
 #                     the supervisor passes it with the facts or hint the checkpoint set)
+#   ROUTE_LIMITED_UNTIL  with ROUTE_LAST_CLASS=capacity: when the pool frees up, if the provider said;
+#                     else the pool is held for ROUTE_CAPACITY_HOLD seconds (default 3600)
 #   ROUTE_REASON      reassign, to move off the previous route
 #   EXTRA_REPOS       more registered repositories the task changes (e.g. "mtg-colosseo"), each
 #                     mirrored at ~/repos/<name>.git: a worker gets <name> on hive/<task> from main
@@ -141,11 +143,17 @@ REASON=${ROUTE_REASON:-new}; [ "$n" -gt 0 ] && [ -z "${ROUTE_REASON:-}" ] && REA
 RS=$ROOT/.route/$(basename "$DIR"); mkdir -p "$RS"
 HIST=$RS/route-history.jsonl
 [ -f "$HIST" ] || { [ -f "$DIR/route-history.jsonl" ] && cp "$DIR/route-history.jsonl" "$HIST"; touch "$HIST"; }
-if [ -n "${ROUTE_LAST_CLASS:-}" ] && [ -s "$HIST" ]; then
-  { head -n -1 "$HIST"; tail -n 1 "$HIST" | jq -c --arg c "$ROUTE_LAST_CLASS" '. + {class: $c}'; } > "$HIST.tmp"
+# A capacity failure holds its pool for this task until ROUTE_LIMITED_UNTIL (the provider's
+# reset, if known) or for ROUTE_CAPACITY_HOLD seconds (default 3600): "out of credits" has no
+# reset time, and without one the router would pick the same pool again. Tagged once, so a
+# relaunch that the router makes wait doesn't push the hold back.
+if [ -n "${ROUTE_LAST_CLASS:-}" ] && [ -s "$HIST" ] && ! tail -n 1 "$HIST" | jq -e .class >/dev/null; then
+  LU=${ROUTE_LIMITED_UNTIL:-$(date -u -d "+${ROUTE_CAPACITY_HOLD:-3600} seconds" +%Y-%m-%dT%H:%M:%SZ)}
+  { head -n -1 "$HIST"; tail -n 1 "$HIST" | jq -c --arg c "$ROUTE_LAST_CLASS" --arg lu "$LU" \
+      '. + {class: $c} + (if $c == "capacity" then {limited_until: $lu} else {} end)'; } > "$HIST.tmp"
   mv "$HIST.tmp" "$HIST"
 fi
-HISTORY=$(jq -s -c '[.[] | select(.class) | {attempt, route_id, tier, pool, class}]' "$HIST")
+HISTORY=$(jq -s -c '[.[] | select(.class) | {attempt, route_id, tier, pool, class, limited_until} | with_entries(select(.value != null))]' "$HIST")
 
 AUTHOR=null
 if [ "$ROLE" = reviewer ]; then

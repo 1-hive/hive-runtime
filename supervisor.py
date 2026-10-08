@@ -11,7 +11,9 @@ for each task a worker holds, applies the ladder:
 3. A task already restarted 3 times                   -> task.escalated to the
    operator (`repeated_failure`: an interrupt, PLAN D15), and the supervisor leaves it alone.
 4. A reviewer's process ended without a verdict       -> task.escalated to the chief
-   of staff (`other`).
+   of staff (`other`); unless it hit a usage or quota limit: then the dispatcher relaunches
+   it (the launcher holds that pool, so the router picks another or waits), and only after
+   MAX_REVIEW_LIMITS such ends on the same result is it escalated, to the operator (`other`).
 5. An active goal past a budget dimension              -> goal.escalated to the operator
    (`budget_exceeded`), once per budget: usd_micros and tokens against the goal's `spent`,
    wall_clock_seconds against the time since approval. Raising the budget re-arms it.
@@ -156,11 +158,15 @@ CAPACITY_SIGNS = ("out of credits", "session limit", "usage limit", "rate limit"
                   "quota", "insufficient_quota", "overloaded")
 
 
+MAX_REVIEW_LIMITS = 3   # reviewer ends on a usage limit, for one result, before the operator hears
+
+
 def failure_class(task: str, prefix: str, n: int) -> str:
     """Why the attempt's process ended, from the tail of its output: `capacity` for a
     usage or quota limit (so the router avoids that pool), else `interrupted`."""
+    folder = f"{task}-review" if prefix == "review" else task
     try:
-        out = json.loads((ROUTE / task / f"{prefix}.{n}.attempt.json").read_text()).get("output")
+        out = json.loads((ROUTE / folder / f"{prefix}.{n}.attempt.json").read_text()).get("output")
         tail = Path(out).read_bytes()[-6000:].decode("utf-8", "replace").lower()
         err = Path(str(Path(out).with_suffix("")) + ".err")
         if err.exists():
@@ -384,7 +390,17 @@ def tick(dry: bool) -> None:
                 hist = json.loads(hive("task", task))["events"]
                 assigned = max((ts(e["recorded_at"]) for e in hist if e["type"] == "review.assigned"), default=0)
                 pid_time = (ROUTE / f"{task}-review" / f"review.{att[0]}.pid").stat().st_mtime
-                if pid_time >= assigned - 60:   # this review's process, not an older one
+                if pid_time >= assigned - 60 and failure_class(task, "review", att[0]) == "capacity":
+                    # The dispatcher relaunches it; tell the operator only when it keeps happening.
+                    ends = [n for n in range(att[0] + 1)
+                            if (ROUTE / f"{task}-review" / f"review.{n}.pid").exists()
+                            and (ROUTE / f"{task}-review" / f"review.{n}.pid").stat().st_mtime >= assigned - 60
+                            and failure_class(task, "review", n) == "capacity"]
+                    if len(ends) >= MAX_REVIEW_LIMITS:
+                        emit("task.escalated", task, {"to": "operator", "code": "other",
+                                                      "reason": f"reviewer {rv} hit a usage or quota limit {len(ends)} "
+                                                                "times on this result; check the model accounts"}, dry=dry)
+                elif pid_time >= assigned - 60:   # this review's process, not an older one
                     emit("task.escalated", task, {"to": "chief_of_staff", "code": "other",
                                                   "reason": f"reviewer {rv}'s process ended without a verdict"}, dry=dry)
             continue
