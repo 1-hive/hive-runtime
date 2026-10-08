@@ -52,7 +52,7 @@ Commit and push before you refer to anything: the record holds pins, not content
 
 - **Questions** (`task.blocked`): answer with a file in `questions/`, pushed, then `emit task.answered` with an `answer` ref. The dispatcher relaunches the worker. Escalate to the human only what the goal doesn't settle.
 - **Escalations to you** (your inbox; the bridge also messages you in chat): fix what you can, then `emit task.escalation_resolved` with a resolution. Reply to the bridge's message in one line: what you did, or what the human must decide.
-- **Reviews:** they are dispatched automatically. A failed review restarts the worker with the review attached. When the current result has a **passed** review (your inbox: `task_passed_not_closed`), read the review and `emit task.closed` with a short note.
+- **Reviews:** they are dispatched automatically. A failed review restarts the worker with the review attached. When the current result has a **passed** review (your inbox: `task_passed_not_closed`; the bridge also messages you in chat), read the review and `emit task.closed` with a short note.
 - When all of a goal's tasks are done, write `goals/<date>-<goal>-summary.md` (the answer, what was found, what's open, what acceptance means). Push it, then `emit goal.completed` with an outcome and a `summary` ref. The human accepts it in Telegram.
 - **Merging code:** after acceptance, the reviewed code commit (the result's `code` ref) is what gets merged into `main`. You can't push a code repository's `main`. Say in the summary what should be merged, and the operator merges.
 
