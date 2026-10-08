@@ -226,14 +226,17 @@ fi
 [ "${ROUTE_FACTS:-}" = none ] && ROUTE_FACTS='{}'
 # runtime: where the attempt runs, so the router's evidence from before and after Phase E
 # (containers, a separate OS user) stays apart. Today agents run on the host as the operator's user.
+# writer: who stated the facts (the order's author, cos, unless ROUTE_WRITER says otherwise), for
+# the reader's disagreement report (hive-route ROUTING §4.8).
 REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND" --arg rt "$RUNTIME" \
+  --arg w "${ROUTE_WRITER:-cos}" \
   --argjson facts "${ROUTE_FACTS:-{\}}" --argjson hint "${ROUTE_HINT:-null}" \
   --argjson author "$AUTHOR" --argjson history "$HISTORY" --argjson override "${ROUTE_OVERRIDE:-null}" \
-  '{task: $t, attempt: $a, reason: $r, runtime: $rt, facts: ({kind: $k} + $facts), tools_needed: true}
+  '{task: $t, attempt: $a, reason: $r, runtime: $rt, writer: $w, facts: ({kind: $k} + $facts), tools_needed: true}
    + (if $hint then {hint: $hint} else {} end) + (if $author then {author: $author} else {} end)
    + (if $override then {override: $override} else {} end)
    + (if ($history | length) > 0 then {history: $history} else {} end)')
-# The task's text for the scorer: the kickoff and the order files it names.
+# The task's text for the scorer and the reader: the kickoff and the order files it names.
 { cat KICKOFF.md; for f in $(grep -o "$DIR/workspace/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u); do
     [ -f "$f" ] && { echo; echo "--- $f"; cat "$f"; }; done; } > route-task.md
 RC=0; DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log "$RLOG" --task-text route-task.md) || RC=$?
