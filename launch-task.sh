@@ -39,6 +39,10 @@
 #   ROUTE_OVERRIDE    JSON {"route_id": ..., "reason": ..., "by": "operator"}: an operator's
 #                     explicit choice (RT1), e.g. a same-family review when no other family has
 #                     capacity. Only on the operator's instruction; the reason says which.
+#                     Without it, a worker takes the operator's standing override for its task or goal
+#                     from ~/.config/hive/route-overrides.json, if any:
+#                     {"tasks": {"<task>": {route_id, reason, by}}, "goals": {"<goal>": {...}}}.
+#                     Reviews never do: RT4 (another family) stays theirs.
 # Claude Code runs in print mode with auto permissions; Codex runs `exec`.
 set -euo pipefail
 ROLE=$1 TASK=$2 ACTOR=$3 KICKOFF=$4 BASE=${5:-main}
@@ -154,6 +158,13 @@ if [ -n "${ROUTE_LAST_CLASS:-}" ] && [ -s "$HIST" ] && ! tail -n 1 "$HIST" | jq 
   mv "$HIST.tmp" "$HIST"
 fi
 HISTORY=$(jq -s -c '[.[] | select(.class) | {attempt, route_id, tier, pool, class, limited_until} | with_entries(select(.value != null))]' "$HIST")
+
+OVR=$HOME/.config/hive/route-overrides.json
+if [ -z "${ROUTE_OVERRIDE:-}" ] && [ "$ROLE" = worker ] && [ -s "$OVR" ]; then
+  GOAL=$(HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY hive task "$TASK" 2>/dev/null | jq -r '.task.goal // empty')
+  ROUTE_OVERRIDE=$(jq -c --arg t "$TASK" --arg g "$GOAL" '.tasks[$t] // .goals[$g] // empty' "$OVR")
+  [ -z "$ROUTE_OVERRIDE" ] || echo "operator override: $ROUTE_OVERRIDE"
+fi
 
 AUTHOR=null
 if [ "$ROLE" = reviewer ]; then
