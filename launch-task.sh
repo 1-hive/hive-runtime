@@ -42,7 +42,8 @@
 #                     Without it, a worker takes the operator's standing override for its task or goal
 #                     from ~/.config/hive/route-overrides.json, if any:
 #                     {"tasks": {"<task>": {route_id, reason, by}}, "goals": {"<goal>": {...}}}.
-#                     Reviews never do: RT4 (another family) stays theirs.
+#                     Reviews never do: RT4 (another family) stays theirs. A `reviews` entry there
+#                     ({route_id, reason, by}) is the fallback when the router can't route a review now.
 # Claude Code runs in print mode with auto permissions; Codex runs `exec`.
 set -euo pipefail
 ROLE=$1 TASK=$2 ACTOR=$3 KICKOFF=$4 BASE=${5:-main}
@@ -240,6 +241,14 @@ REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND"
 { cat KICKOFF.md; for f in $(grep -o "$DIR/workspace/[^ )\`]*/orders/[^ )\`]*\.md" KICKOFF.md | sort -u); do
     [ -f "$f" ] && { echo; echo "--- $f"; cat "$f"; }; done; } > route-task.md
 RC=0; DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log "$RLOG" --task-text route-task.md) || RC=$?
+# The operator's standing review fallback (route-overrides.json `reviews`): when the router can't
+# route a review now (wait or no_route, e.g. the other family is out of credits), take that route.
+if [ "$RC" -ne 0 ] && [ "$ROLE" = reviewer ] && [ -z "${ROUTE_OVERRIDE:-}" ] && [ -s "$OVR" ] \
+    && FB=$(jq -c '.reviews // empty' "$OVR") && [ -n "$FB" ]; then
+  echo "router: $(jq -r .decision <<<"$DEC"); operator review fallback: $FB" >&2
+  REQ=$(jq -c --argjson o "$FB" '. + {override: $o}' <<<"$REQ")
+  RC=0; DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log "$RLOG" --task-text route-task.md) || RC=$?
+fi
 # Summaries of new log entries go to the record (amendment A1) as the router's actor, in the
 # background, once that actor is registered; output in $ROOT/route-record.log.
 RKEY=$HOME/.config/hive/agents/router.key
@@ -392,7 +401,8 @@ else
       if [ "${P[0]}" = sudo ]; then
         # The actor user's own Codex login (deploy/README.md), never the operator's.
         "${P[@]}" unshare sh -c 'test -s "$HOME/.codex/auth.json"' \
-          || { echo "$AU has no Codex login: see deploy/README.md, 'Container runtime'" >&2; exit 3; }
+          || { echo "$AU has no Codex login: see deploy/README.md, 'Container runtime'" >&2
+               sed -i '$d' "$HIST"; exit 3; }   # never launched: not an attempt
         CRED=(-v "/var/lib/1hive-agents/$AU/.codex:/root/.codex")
       else
         CRED=(-v "$HOME/.codex:/root/.codex")   # the operator's login, refreshed in place
