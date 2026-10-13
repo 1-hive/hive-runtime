@@ -250,14 +250,16 @@ if [ "$RC" -ne 0 ] && [ "$ROLE" = reviewer ] && [ -z "${ROUTE_OVERRIDE:-}" ] && 
   RC=0; DEC=$(printf '%s' "$REQ" | hr decide "$TABLE" - --sources "$SOURCES" --log "$RLOG" --task-text route-task.md) || RC=$?
 fi
 # Summaries of new log entries go to the record (amendment A1) as the router's actor, in the
-# background, once that actor is registered; output in $ROOT/route-record.log.
+# background, once that actor is registered; output in $ROOT/route-record.log. Decisions carry
+# their runtime (A4): until the operator has run deploy/apply-policy.sh for spec-v1.0-a4, the
+# record refuses them and the sync waits at that entry, losing nothing.
 RKEY=$HOME/.config/hive/agents/router.key
 # Only the deployment's own log is ever synced (a copy of this block run on a scratch log once
 # posted test entries to the record).
 if [ "$RLOG" = "$HOME/work/1hive/route-log.jsonl" ] && [ -f "$RKEY" ] && HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$RKEY hive actors 2>/dev/null \
     | jq -e 'any(.[]; .id == "router")' >/dev/null 2>&1; then
   ( HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$RKEY HIVE_VIA=hive-route:router \
-      nohup uv run -q --frozen --project /home/omegahive/repos/hive-route hive-route record "$RLOG" \
+      nohup uv run -q --frozen --project /home/omegahive/repos/hive-route hive-route record --with-runtime "$RLOG" \
       >> "$ROOT/route-record.log" 2>&1 & )
 fi
 [ "$RC" -eq 0 ] || {
