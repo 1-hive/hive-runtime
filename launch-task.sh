@@ -225,6 +225,21 @@ EOF
   fi
 fi
 [ "${ROUTE_FACTS:-}" = none ] && ROUTE_FACTS='{}'
+# The harnesses this actor can start, from the credentials it holds (hive-route rev 15, RT2), so the
+# router never picks one it can't launch: Claude Code with the shared token; Codex only with a login
+# of its own (the actor's OS user, else the operator's). E.g. when the Claude pool passes its soft
+# threshold, a worker without a Codex login stays on Claude instead of failing every launch.
+CAN=()
+if grep -q '[^[:space:]]' "$HOME/.config/hive/claude-oauth-token" 2>/dev/null; then
+  mapfile -t CAN < <(grep -o 'harness: *claude-code[A-Za-z0-9_-]*' "$TABLE" | sed 's/harness: *//' | sort -u)
+fi
+AU0=hive-${ACTOR//./-}
+if id "$AU0" >/dev/null 2>&1 && [ "$RUNTIME" = container ]; then
+  sudo -n -u "$AU0" /usr/local/bin/hive-agent-podman unshare sh -c 'test -s "$HOME/.codex/auth.json"' 2>/dev/null && CAN+=(codex)
+elif [ -s "$HOME/.codex/auth.json" ]; then
+  CAN+=(codex)
+fi
+HARNESSES=$(printf '%s\n' "${CAN[@]}" | jq -R . | jq -s -c 'map(select(length > 0))')
 # runtime: where the attempt runs, so the router's evidence from before and after Phase E
 # (containers, a separate OS user) stays apart. Today agents run on the host as the operator's user.
 # writer: who stated the facts (the order's author, cos, unless ROUTE_WRITER says otherwise), for
@@ -233,7 +248,9 @@ REQ=$(jq -n --arg t "$TASK" --arg a "$ATTEMPT" --arg r "$REASON" --arg k "$KIND"
   --arg w "${ROUTE_WRITER:-cos}" \
   --argjson facts "${ROUTE_FACTS:-{\}}" --argjson hint "${ROUTE_HINT:-null}" \
   --argjson author "$AUTHOR" --argjson history "$HISTORY" --argjson override "${ROUTE_OVERRIDE:-null}" \
-  '{task: $t, attempt: $a, reason: $r, runtime: $rt, writer: $w, facts: ({kind: $k} + $facts), tools_needed: true}
+  --argjson harnesses "$HARNESSES" \
+  '{task: $t, attempt: $a, reason: $r, runtime: $rt, writer: $w, facts: ({kind: $k} + $facts), tools_needed: true,
+    harnesses: $harnesses}
    + (if $hint then {hint: $hint} else {} end) + (if $author then {author: $author} else {} end)
    + (if $override then {override: $override} else {} end)
    + (if ($history | length) > 0 then {history: $history} else {} end)')
