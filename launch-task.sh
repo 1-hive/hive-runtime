@@ -314,6 +314,32 @@ case "$ROLE:$HARNESS" in
 esac
 printf '%s' "$DEC" | hr manifest - --cwd "$DIR" --output "$OUT" > "$RS/$PREFIX.$n.attempt.json"
 
+# Subagents (hive-route §4.9): cheaper routes in the same pool the worker may hand subtasks to.
+# One Claude Code agent file each, written fresh for every attempt (the route's may change).
+rm -f "$DIR"/.claude/agents/route-*.md
+SUBS=$(jq -c '.subagents // [] | .[]' <<<"$DEC")
+if [ -n "$SUBS" ]; then
+  mkdir -p "$DIR/.claude/agents"
+  while read -r s; do
+    SID=$(jq -r .route_id <<<"$s") SMODEL=$(jq -r .model <<<"$s")
+    cat > "$DIR/.claude/agents/route-$SID.md" <<AGENT
+---
+name: $SID
+description: A cheaper model ($SMODEL) for well-specified subtasks with a clear check, e.g. finding and reading code, running tests and summarizing failures, or a mechanical edit you have fully described. Not for design decisions or judging results.
+model: $SMODEL
+---
+Do exactly the subtask you are given, in this task's folder. Don't commit, push or post to the record. Report what you did and what you found, briefly and precisely, with file paths and command output where they matter.
+AGENT
+  done <<<"$SUBS"
+  cat >> KICKOFF.md <<KICK
+
+## Subagents
+
+To save the task's model for the parts that need it, you may hand well-specified subtasks to these subagents (the Agent tool, by name): $(jq -r '[.subagents[] | "\(.route_id) (\(.model))"] | join(", ")' <<<"$DEC"). Good uses: finding and reading code, running tests and summarizing failures, a mechanical edit you have fully described. Keep planning, design decisions and judging results yourself; you remain responsible for the result.
+KICK
+  echo "subagents: $(jq -r '[.subagents[].route_id] | join(", ")' <<<"$DEC")"
+fi
+
 cat > "$DIR/hive.env" <<EOF
 export HIVE_URL=http://$H:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY HIVE_VIA=$HARNESS:$ACTOR
 export HIVEPIN_REPOSITORY_REGISTRY_PATH=$DIR/registry.json
