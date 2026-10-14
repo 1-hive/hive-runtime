@@ -11,7 +11,8 @@ for each task a worker holds, applies the ladder:
 3. A task already restarted 3 times                   -> task.escalated to the
    operator (`repeated_failure`: an interrupt, PLAN D15), and the supervisor leaves it alone.
 4. A reviewer's process ended without a verdict       -> task.escalated to the chief
-   of staff (`other`); unless it hit a usage or quota limit: then the dispatcher relaunches
+   of staff (`other`), with why it ended (end_reason: stopped from outside, killed, lost its
+   connection, the 90-minute limit, or unknown, and how long it ran); unless it hit a usage or quota limit: then the dispatcher relaunches
    it (the launcher holds that pool, so the router picks another or waits), and only after
    MAX_REVIEW_LIMITS such ends on the same result is it escalated, to the operator (`other`).
 5. An active goal past a budget dimension              -> goal.escalated to the operator
@@ -174,6 +175,42 @@ def failure_class(task: str, prefix: str, n: int) -> str:
     except (OSError, ValueError, TypeError):
         return "interrupted"
     return "capacity" if any(sign in tail for sign in CAPACITY_SIGNS) else "interrupted"
+
+
+END_SIGNS = (   # (signs in the output's tail, why it ended, for the record), first match wins
+    (("exiting on signal 15", "signal: terminated", "sigterm"), "it was stopped from outside (SIGTERM), "
+     "e.g. a host, service or container restart"),
+    (("exiting on signal 9", "signal: killed", "sigkill", "out of memory", "oom"), "it was killed (SIGKILL or out of memory)"),
+    (("connection timed out", "error sending request", "stream disconnected", "connection reset",
+      "connection refused", "network is unreachable", "timed out waiting", "econnreset", "etimedout"),
+     "it lost its connection to the model provider or the host"),
+)
+REVIEW_CAP_S = 90 * 60   # launch-task.sh: timeout 90m on a reviewer
+
+
+def end_reason(task: str, prefix: str, n: int) -> str:
+    """Why an attempt's process ended, in words for the record (task.escalated reason), so the chief
+    of staff can say why without host access. From its output's tail and how long it ran; never
+    quotes the output itself."""
+    folder = f"{task}-review" if prefix == "review" else task
+    try:
+        out = Path(json.loads((ROUTE / folder / f"{prefix}.{n}.attempt.json").read_text())["output"])
+        started = (ROUTE / folder / f"{prefix}.{n}.pid").stat().st_mtime
+        ran = int(out.stat().st_mtime - started)
+        tail = out.read_bytes()[-6000:].decode("utf-8", "replace").lower()
+        err = Path(str(out.with_suffix("")) + ".err")
+        if err.exists():
+            tail += err.read_bytes()[-2000:].decode("utf-8", "replace").lower()
+    except (OSError, ValueError, TypeError, KeyError):
+        return "its output can't be read"
+    if any(sign in tail for sign in CAPACITY_SIGNS):
+        why = "it hit a usage or quota limit"
+    elif prefix == "review" and ran >= REVIEW_CAP_S - 120:
+        why = "it reached the 90-minute review limit"
+    else:
+        why = next((w for signs, w in END_SIGNS if any(x in tail for x in signs)),
+                   f"its output doesn't say why (host log: {out})")
+    return f"{why}; it ran {ran // 60} min"
 
 
 def supplied_facts(task: str) -> str | None:
@@ -402,7 +439,8 @@ def tick(dry: bool) -> None:
                                                                 "times on this result; check the model accounts"}, dry=dry)
                 elif pid_time >= assigned - 60:   # this review's process, not an older one
                     emit("task.escalated", task, {"to": "chief_of_staff", "code": "other",
-                                                  "reason": f"reviewer {rv}'s process ended without a verdict"}, dry=dry)
+                                                  "reason": f"reviewer {rv}'s process ended without a verdict: "
+                                                            f"{end_reason(task, 'review', att[0])}"[:500]}, dry=dry)
             continue
         every = (ext.get("lease") or {}).get("checkin_every_seconds")
         if not every:
