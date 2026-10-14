@@ -13,6 +13,8 @@
 # - ~/work/1hive/cos, mounted at /cos: its workspace clone, its Claude Code state, and
 #   CLAUDE.md (docs/chief-of-staff.md);
 # - the record, model gateway and sshd, through tools/agent-ports.py's sockets.
+# The registry's file:// fetch URLs reach the host's repositories over sshd, as cos's git does
+# (hive-pin refuses a user name in a registry URL, so git rewrites them instead).
 # Its MCP server `hive` is tools/hive-mcp.py, installed in the image.
 set -euo pipefail
 U=hive-cos NAME=cos
@@ -59,8 +61,10 @@ case "${1:-}" in
       -e HIVE_URL=http://127.0.0.1:8470 -e HIVE_ID=1-hive -e HIVE_KEY_FILE=/keys/cos.key \
       -e HIVE_VIA=claude-code:cos -e HIVEPIN_REPOSITORY_REGISTRY_PATH=/cos/registry.json \
       -e CLAUDE_CONFIG_DIR=/cos/.claude-state -e TZ=CST6 \
-      -e GIT_CONFIG_COUNT=2 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@127.0.0.1/home/omegahive/repos/.insteadOf" \
+      -e GIT_CONFIG_COUNT=3 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@127.0.0.1/home/omegahive/repos/.insteadOf" \
       -e GIT_CONFIG_VALUE_0=/home/omegahive/repos/ -e GIT_CONFIG_KEY_1=safe.directory -e 'GIT_CONFIG_VALUE_1=*' \
+      -e "GIT_CONFIG_KEY_2=url.ssh://$USER@127.0.0.1/home/omegahive/repos/.insteadOf" \
+      -e GIT_CONFIG_VALUE_2=file:///home/omegahive/repos/ \
       -e GIT_AUTHOR_NAME=cos -e GIT_AUTHOR_EMAIL=cos@1-hive.invalid \
       -e GIT_COMMITTER_NAME=cos -e GIT_COMMITTER_EMAIL=cos@1-hive.invalid \
       localhost/1hive-agent:latest bash -c \
