@@ -29,7 +29,7 @@
 #   ROUTE_LIMITED_UNTIL  with ROUTE_LAST_CLASS=capacity: when the pool frees up, if the provider said;
 #                     else the pool is held for ROUTE_CAPACITY_HOLD seconds (default 3600)
 #   ROUTE_REASON      reassign, to move off the previous route
-#   EXTRA_REPOS       more registered repositories the task changes (e.g. "mtg-colosseo"), each
+#   EXTRA_REPOS       more registered repositories the task changes (e.g. "mtg-colosseum"), each
 #                     mirrored at ~/repos/<name>.git: a worker gets <name> on hive/<task> from main
 #                     (its base recorded in base.json), a reviewer gets hive/<task>, or main when
 #                     the task left that repo unchanged (no branch pushed).
