@@ -24,7 +24,7 @@ CLAUDE="claude --model $MODEL --permission-mode auto --mcp-config /cos/mcp.json"
 
 setup() {
   id "$U" >/dev/null 2>&1 || { echo "no OS user $U: sudo $REPO/deploy/agent-users.sh cos" >&2; exit 2; }
-  mkdir -p "$D/chat" "$D/.claude-state"
+  mkdir -p "$D/chat" "$D/.claude-state" "$D/followups"
   [ -d "$D/workspace/.git" ] || git clone -q /home/omegahive/repos/hive-workspace.git "$D/workspace"
   cp "$REPO/docs/chief-of-staff.md" "$D/CLAUDE.md"
   printf '%s\n' '{"mcpServers": {"hive": {"command": "/opt/hive-mcp/venv/bin/python", "args": ["/opt/hive-mcp/hive-mcp.py"]}}}' > "$D/mcp.json"

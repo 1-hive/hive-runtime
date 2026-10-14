@@ -9,6 +9,7 @@
 #   op accept <goal> [note]     accept a completed goal
 #   op reopen <goal> <reason>   send a completed goal back
 #   op abandon <goal> <reason>  abandon a goal
+#   op budget <goal> <hours>    wall-clock budget: <hours> from now (other limits kept); resolves an over-budget alert
 #   op events [n]               the last n events (default 20), one line each
 #   op add-key <public-key>     add a key to the operator (e.g. the Telegram bridge's)
 set -euo pipefail
@@ -41,6 +42,21 @@ case "$cmd" in
   add-key) need "add-key <public-key>" "${1:-}"
            out=$("$HIVE" emit actor.key_added --data "$(json actor_id operator key "$1")" 2>&1) \
              && echo "ok: key added to operator" || { echo "refused: $out" >&2; exit 1; } ;;
+  budget)  need "budget <goal> <hours>" "${2:-}"
+           data=$("$HIVE" state | python3 -c '
+import datetime as dt, json, sys, time
+gid, hours = sys.argv[1], float(sys.argv[2])
+g = json.load(sys.stdin)["goals"].get(gid)
+if not g or not g.get("approved_at"):
+    sys.exit(f"{gid}: no such approved goal")
+used = time.time() - dt.datetime.fromisoformat(g["approved_at"].replace("Z", "+00:00")).timestamp()
+budget = {**(g.get("budget") or {}), "wall_clock_seconds": int(used + hours * 3600)}
+print(json.dumps({"reason": f"{hours:g} more hours (operator, via op)", "budget": budget}))
+print((g.get("escalation") or {}).get("code") or "")' "$1" "$2") || exit 1
+           emit goal.revised "$1" "$(head -1 <<<"$data")"
+           if [ "$(tail -1 <<<"$data")" = budget_exceeded ]; then
+             emit goal.escalation_resolved "$1" "$(json resolution "Budget raised: $2 more hours")"
+           fi ;;
   events)  "$HIVE" events 2>/dev/null | tail -n "${1:-20}" | python3 -c '
 import json, sys
 for l in sys.stdin:
