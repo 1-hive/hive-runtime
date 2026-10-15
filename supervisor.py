@@ -213,6 +213,11 @@ def end_reason(task: str, prefix: str, n: int) -> str:
     return f"{why}; it ran {ran // 60} min"
 
 
+def pin_path(pin: dict) -> str:
+    """A pin's path; a pin of a whole commit (R0 format 2 allows it) has none."""
+    return pin.get("path") or f"(the whole commit {pin.get('commit_oid', '?').split(':', 1)[-1][:12]})"
+
+
 def supplied_facts(task: str) -> str | None:
     """The facts the chief of staff supplied at the task's first routed work launch: they describe
     the task. A later hand launch for one step (e.g. only posting a result) may supply narrower
@@ -320,12 +325,12 @@ def emit(etype: str, task: str, data: dict, refs: list[str] = (), dry: bool = Fa
 
 def restart(t: dict, events: list[dict], reason: str, cls: str, dry: bool) -> None:
     task, attempt = t["id"], (t.get("ext") or {}).get("attempt", 1)
-    reports = [r["pin"]["path"] for e in events if e["type"] == "task.reported" for r in e.get("refs", [])]
+    reports = [pin_path(r["pin"]) for e in events if e["type"] == "task.reported" for r in e.get("refs", [])]
     reviews = [e for e in events if e["type"] == "review.recorded"]
     last_review = reviews[-1] if reviews and (reviews[-1].get("data") or {}).get("verdict") != "passed" else None
     review_note = ""
     if last_review:
-        rp = next((r["pin"]["path"] for r in last_review.get("refs", []) if r["rel"] == "review"), None)
+        rp = next((pin_path(r["pin"]) for r in last_review.get("refs", []) if r["rel"] == "review"), None)
         review_note = (f"\n**The independent review of your last result said `{last_review['data']['verdict']}`.** "
                        f"Read it first and address every finding: `{{DIR}}/workspace/{rp}` (pull the workspace). "
                        "Then post a new result.\n")
@@ -345,7 +350,7 @@ Your earlier work is intact: your branch and task folder `{{DIR}}` (clones, hive
 
 Read, in order:
 1. `{{DIR}}/WORKER-CONTRACT.md`, especially "Running mode" (never wait on background jobs).
-2. Your order: `{{DIR}}/workspace/{t['order']['path']}`.
+2. Your order: `{{DIR}}/workspace/{pin_path(t['order'])}`.
 3. Your latest reports, which say where you were:
 {chr(10).join(f"   - `{{DIR}}/workspace/{p}`" for p in dict.fromkeys(reports[-3:])) or "   - (none posted)"}
 
@@ -413,88 +418,95 @@ def tick(dry: bool) -> None:
     now = time.time()
     check_budgets(state, now, dry)
     for t in state.get("tasks", {}).values():
-        ext = t.get("ext") or {}
-        if t["status"] not in ("assigned", "in_progress", "in_review"):
-            continue
-        esc = ext.get("escalation")
-        if esc and not handled(t["id"], esc):
-            continue
-        task = t["id"]
-        if t["status"] == "in_review":
-            rv = t.get("assigned_reviewer")
-            att = latest_attempt(task, "review")
-            if rv and not t.get("latest_review") and att and not alive(att[1]):
-                hist = json.loads(hive("task", task))["events"]
-                assigned = max((ts(e["recorded_at"]) for e in hist if e["type"] == "review.assigned"), default=0)
-                pid_time = (ROUTE / f"{task}-review" / f"review.{att[0]}.pid").stat().st_mtime
-                if pid_time >= assigned - 60 and failure_class(task, "review", att[0]) == "capacity":
-                    # The dispatcher relaunches it; tell the operator only when it keeps happening.
-                    ends = [n for n in range(att[0] + 1)
-                            if (ROUTE / f"{task}-review" / f"review.{n}.pid").exists()
-                            and (ROUTE / f"{task}-review" / f"review.{n}.pid").stat().st_mtime >= assigned - 60
-                            and failure_class(task, "review", n) == "capacity"]
-                    if len(ends) >= MAX_REVIEW_LIMITS:
-                        emit("task.escalated", task, {"to": "operator", "code": "other",
-                                                      "reason": f"reviewer {rv} hit a usage or quota limit {len(ends)} "
-                                                                "times on this result; check the model accounts"}, dry=dry)
-                elif pid_time >= assigned - 60:   # this review's process, not an older one
-                    emit("task.escalated", task, {"to": "chief_of_staff", "code": "other",
-                                                  "reason": f"reviewer {rv}'s process ended without a verdict: "
-                                                            f"{end_reason(task, 'review', att[0])}"[:500]}, dry=dry)
-            continue
-        every = (ext.get("lease") or {}).get("checkin_every_seconds")
-        if not every:
-            continue
-        att = latest_attempt(task, "worker")
-        if att is None:
-            continue   # launched by hand, not by the launcher: nothing to act on
-        n, pid = att
-        last = ts((t.get("last_activity") or {}).get("at")) or ts(t.get("assigned_at")) or now
-        pid_start = (ROUTE / task / f"worker.{n}.pid").stat().st_mtime
-        since = max(last, pid_start)
-        attempt = ext.get("attempt", 1)
-        if not alive(pid):
-            if now - pid_start < 120:
-                continue
+        try:   # one task's failure is logged, never stops the others
+            supervise(t, now, dry)
+        except Exception as e:
+            log(f"{t['id']}: {e!r}")
+
+
+def supervise(t: dict, now: float, dry: bool) -> None:
+    ext = t.get("ext") or {}
+    if t["status"] not in ("assigned", "in_progress", "in_review"):
+        return
+    esc = ext.get("escalation")
+    if esc and not handled(t["id"], esc):
+        return
+    task = t["id"]
+    if t["status"] == "in_review":
+        rv = t.get("assigned_reviewer")
+        att = latest_attempt(task, "review")
+        if rv and not t.get("latest_review") and att and not alive(att[1]):
             hist = json.loads(hive("task", task))["events"]
-            if (t.get("latest_review") or {}).get("verdict") not in ("failed", "needs_information"):
-                cp = take_checkpoint(t, n, pid_start, hist, dry)
-                if cp:
-                    restart(t, hist, f"the worker asked to be routed again ({cp['direction']}): {cp['reason']}",
-                            "checkpoint", dry)
-                    continue
-            # Checkpoints are not failed attempts.
-            if attempt - len(checkpoints(task)) >= MAX_ATTEMPTS:
-                emit("task.escalated", task, {"to": "operator", "code": "repeated_failure",
-                                              "reason": f"{attempt} attempts; the last worker process ended without a result"}, dry=dry)
-                continue
-            cls = failure_class(task, "worker", n)
-            why = ("the worker hit a usage or quota limit" if cls == "capacity"
-                   else "the worker's process ended without posting a result")
-            if (t.get("latest_review") or {}).get("verdict") in ("failed", "needs_information"):
-                cls, why = "failed_check", "the independent review sent the result back"
-            restart(t, hist, why, cls, dry)
-            continue
-        if now - since <= every + GRACE:
-            continue
-        nudges = ext.get("nudges_since_activity", 0)
-        if nudges < MAX_NUDGES:
-            hist = json.loads(hive("task", task))["events"]
-            last_nudge = max((ts(e["recorded_at"]) for e in hist if e["type"] == "task.nudged"), default=0)
-            if now - last_nudge > every:
-                emit("task.nudged", task, {"reason": f"no activity for {int((now - since) / 60)} min "
-                                                     f"(check-in every {every // 60} min); worker process alive"}, dry=dry)
-            continue
-        if attempt - len(checkpoints(task)) >= MAX_ATTEMPTS:
-            emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck",
-                                          "reason": f"silent after {nudges} nudges and {attempt} attempts"}, dry=dry)
-            continue
+            assigned = max((ts(e["recorded_at"]) for e in hist if e["type"] == "review.assigned"), default=0)
+            pid_time = (ROUTE / f"{task}-review" / f"review.{att[0]}.pid").stat().st_mtime
+            if pid_time >= assigned - 60 and failure_class(task, "review", att[0]) == "capacity":
+                # The dispatcher relaunches it; tell the operator only when it keeps happening.
+                ends = [n for n in range(att[0] + 1)
+                        if (ROUTE / f"{task}-review" / f"review.{n}.pid").exists()
+                        and (ROUTE / f"{task}-review" / f"review.{n}.pid").stat().st_mtime >= assigned - 60
+                        and failure_class(task, "review", n) == "capacity"]
+                if len(ends) >= MAX_REVIEW_LIMITS:
+                    emit("task.escalated", task, {"to": "operator", "code": "other",
+                                                  "reason": f"reviewer {rv} hit a usage or quota limit {len(ends)} "
+                                                            "times on this result; check the model accounts"}, dry=dry)
+            elif pid_time >= assigned - 60:   # this review's process, not an older one
+                emit("task.escalated", task, {"to": "chief_of_staff", "code": "other",
+                                              "reason": f"reviewer {rv}'s process ended without a verdict: "
+                                                        f"{end_reason(task, 'review', att[0])}"[:500]}, dry=dry)
+        return
+    every = (ext.get("lease") or {}).get("checkin_every_seconds")
+    if not every:
+        return
+    att = latest_attempt(task, "worker")
+    if att is None:
+        return   # launched by hand, not by the launcher: nothing to act on
+    n, pid = att
+    last = ts((t.get("last_activity") or {}).get("at")) or ts(t.get("assigned_at")) or now
+    pid_start = (ROUTE / task / f"worker.{n}.pid").stat().st_mtime
+    since = max(last, pid_start)
+    attempt = ext.get("attempt", 1)
+    if not alive(pid):
+        if now - pid_start < 120:
+            return
         hist = json.loads(hive("task", task))["events"]
-        if not dry:
-            cf = ROUTE / task / f"worker.{n}.container"
-            stop(pid, cf.read_text().strip() if cf.exists() else None)
-            time.sleep(5)
-        restart(t, hist, f"silent for {int((now - since) / 60)} min after {nudges} nudges", "stalled", dry)
+        if (t.get("latest_review") or {}).get("verdict") not in ("failed", "needs_information"):
+            cp = take_checkpoint(t, n, pid_start, hist, dry)
+            if cp:
+                restart(t, hist, f"the worker asked to be routed again ({cp['direction']}): {cp['reason']}",
+                        "checkpoint", dry)
+                return
+        # Checkpoints are not failed attempts.
+        if attempt - len(checkpoints(task)) >= MAX_ATTEMPTS:
+            emit("task.escalated", task, {"to": "operator", "code": "repeated_failure",
+                                          "reason": f"{attempt} attempts; the last worker process ended without a result"}, dry=dry)
+            return
+        cls = failure_class(task, "worker", n)
+        why = ("the worker hit a usage or quota limit" if cls == "capacity"
+               else "the worker's process ended without posting a result")
+        if (t.get("latest_review") or {}).get("verdict") in ("failed", "needs_information"):
+            cls, why = "failed_check", "the independent review sent the result back"
+        restart(t, hist, why, cls, dry)
+        return
+    if now - since <= every + GRACE:
+        return
+    nudges = ext.get("nudges_since_activity", 0)
+    if nudges < MAX_NUDGES:
+        hist = json.loads(hive("task", task))["events"]
+        last_nudge = max((ts(e["recorded_at"]) for e in hist if e["type"] == "task.nudged"), default=0)
+        if now - last_nudge > every:
+            emit("task.nudged", task, {"reason": f"no activity for {int((now - since) / 60)} min "
+                                                 f"(check-in every {every // 60} min); worker process alive"}, dry=dry)
+        return
+    if attempt - len(checkpoints(task)) >= MAX_ATTEMPTS:
+        emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck",
+                                      "reason": f"silent after {nudges} nudges and {attempt} attempts"}, dry=dry)
+        return
+    hist = json.loads(hive("task", task))["events"]
+    if not dry:
+        cf = ROUTE / task / f"worker.{n}.container"
+        stop(pid, cf.read_text().strip() if cf.exists() else None)
+        time.sleep(5)
+    restart(t, hist, f"silent for {int((now - since) / 60)} min after {nudges} nudges", "stalled", dry)
 
 
 def main() -> None:

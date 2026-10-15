@@ -74,7 +74,7 @@ Read first:
 - `{{DIR}}/WORKER-CONTRACT.md`: "Reviewers", "Identity", "Stop-lines" and "Running mode";
 - in `{{DIR}}/workspace` (pull main): the goal `{goal_path}`, especially "Doesn't count, even if every check passes, when", and the order `{order_path}`.
 
-The result is `{result_path}`, at workspace commit `{result_commit}` (`git -C {{DIR}}/workspace fetch origin && git -C {{DIR}}/workspace show {result_commit}:{result_path}`). {code_line}
+{result_line} {code_line}
 
 Before any `hive` or `hive-pin` command: `source {{DIR}}/hive.env` (your key only).
 
@@ -142,12 +142,23 @@ def kickoff(t: dict, reviewer: str, state: dict) -> Path:
     text = KICKOFF.format(
         reviewer=reviewer, task=task, goal=t.get("goal"), project=t.get("project"),
         result_event=res["event_id"], goal_path=(goal.get("goal_pin") or {}).get("path", "(see the order)"),
-        order_path=t["order"]["path"], result_path=res["pin"]["path"],
-        result_commit=res["pin"]["commit_oid"].split(":", 1)[-1], code_line=code_line, review_path=review_path)
+        order_path=t["order"].get("path", "(see the goal)"), result_line=result_line(res["pin"]),
+        code_line=code_line, review_path=review_path)
     HOME.mkdir(parents=True, exist_ok=True)
     p = HOME / f"{task}-{res['event_id'][:13]}-{reviewer}.md"
     p.write_text(text)
     return p
+
+
+def result_line(pin: dict) -> str:
+    """Where the reviewer finds the result: a file at a commit, or a whole commit (R0 format 2
+    allows a pin without a path), whose files the reviewer lists."""
+    c = pin["commit_oid"].split(":", 1)[-1]
+    if pin.get("path"):
+        return (f"The result is `{pin['path']}`, at workspace commit `{c}` (`git -C {{DIR}}/workspace fetch origin && "
+                f"git -C {{DIR}}/workspace show {c}:{pin['path']}`).")
+    return (f"The result is the whole workspace commit `{c}`, not one file: `git -C {{DIR}}/workspace fetch origin && "
+            f"git -C {{DIR}}/workspace show --stat {c}` lists what it adds; the report is among them.")
 
 
 def repos_line(t: dict) -> str:
@@ -201,7 +212,7 @@ def launch_worker(t: dict, state: dict, text: str, dry: bool, retry_at: dict, wh
 def fields(t: dict, state: dict) -> dict:
     goal = state.get("goals", {}).get(t.get("goal") or "", {})
     return {"owner": t["owner"], "task": t["id"], "title": t.get("title", ""), "goal": t.get("goal"),
-            "project": t.get("project"), "order_path": t["order"]["path"],
+            "project": t.get("project"), "order_path": t["order"].get("path", "(see the goal)"),
             "goal_path": (goal.get("goal_pin") or {}).get("path", "(see the order)")}
 
 
@@ -239,24 +250,32 @@ def dispatch(t: dict, state: dict, dry: bool, retry_at: dict, events: list[dict]
 def tick(dry: bool, retry_at: dict) -> None:
     state = json.loads(hive("state"))
     for t in state.get("tasks", {}).values():
-        if (t.get("ext") or {}).get("escalation"):
-            continue
-        if t["status"] == "assigned" and t.get("owner", "").startswith("worker.") \
-                and not any(ROUTE.joinpath(t["id"]).glob("worker.*.pid")):
-            launch_worker(t, state, WORKER_KICKOFF.format(**fields(t, state), repos_line=repos_line(t)),
-                          dry, retry_at, "new")
-        elif t["status"] == "blocked" and not worker_alive(t["id"]):
-            events = json.loads(hive("task", t["id"]))["events"]
-            blocked = max((e["position"] for e in events if e["type"] == "task.blocked"), default=0)
-            answers = [e for e in events if e["type"] == "task.answered" and e["position"] > blocked]
-            if answers:
-                ans = next((r["pin"]["path"] for r in answers[-1].get("refs", []) if r["rel"] == "answer"), "?")
-                launch_worker(t, state, ANSWERED_KICKOFF.format(**fields(t, state), answer_path=ans),
-                              dry, retry_at, f"answered-{answers[-1]['position']}")
-        elif t["status"] == "in_review":
-            events = json.loads(hive("task", t["id"]))["events"]
-            if needs_review(t, events):
-                dispatch(t, state, dry, retry_at, events)
+        try:   # one task's failure is logged, never stops the others
+            handle(t, state, dry, retry_at)
+        except Exception as e:
+            log(f"{t['id']}: {e!r}")
+
+
+def handle(t: dict, state: dict, dry: bool, retry_at: dict) -> None:
+    """Launch what one task needs: its worker, a worker to read an answer, or its reviewer."""
+    if (t.get("ext") or {}).get("escalation"):
+        return
+    if t["status"] == "assigned" and t.get("owner", "").startswith("worker.") \
+            and not any(ROUTE.joinpath(t["id"]).glob("worker.*.pid")):
+        launch_worker(t, state, WORKER_KICKOFF.format(**fields(t, state), repos_line=repos_line(t)),
+                      dry, retry_at, "new")
+    elif t["status"] == "blocked" and not worker_alive(t["id"]):
+        events = json.loads(hive("task", t["id"]))["events"]
+        blocked = max((e["position"] for e in events if e["type"] == "task.blocked"), default=0)
+        answers = [e for e in events if e["type"] == "task.answered" and e["position"] > blocked]
+        if answers:
+            ans = next((r["pin"].get("path", "?") for r in answers[-1].get("refs", []) if r["rel"] == "answer"), "?")
+            launch_worker(t, state, ANSWERED_KICKOFF.format(**fields(t, state), answer_path=ans),
+                          dry, retry_at, f"answered-{answers[-1]['position']}")
+    elif t["status"] == "in_review":
+        events = json.loads(hive("task", t["id"]))["events"]
+        if needs_review(t, events):
+            dispatch(t, state, dry, retry_at, events)
 
 
 def main() -> None:
