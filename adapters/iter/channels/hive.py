@@ -1,0 +1,338 @@
+"""hive channel: a long-lived Iter agent's work, from a hive record (hive-runtime, adapters/iter).
+
+The agent keeps running and keeps its memory; its tasks come from the record, never from chat.
+Install: copy this file to the agent's channels/ and tools/hive_task.py to its tools/, then write
+.hive/config.json in the agent's folder (README.md beside this file).
+
+- receive(): what the record says this agent should now do, as plain text: a task assigned to it
+  (with its order), an answer to its question, a review of its result, a result for it to review,
+  and the outcome of each action it asked for.
+- send(content): a short progress note on the agent's one open task (a task.reported progress).
+- Actions (hive_task tool) and notes are queued as files; a small daemon started on first use does
+  the slow parts (record reads, git commits and pushes, pins, signed events), so receive() and the
+  tool return within Iter's 5-second limit.
+"""
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent          # the agent's Iter folder
+CONF = ROOT / ".hive" / "config.json"
+RUN = ROOT / ".runtime" / "hive"
+INBOX, OUTBOX, PID = RUN / "inbox", RUN / "outbox", RUN / "pid"
+SEEN, TASKS, LOG = RUN / "seen.json", RUN / "tasks", RUN / "log.txt"
+MAX_TEXT = 6000                                      # of an order, answer or review, per message
+
+
+def _dirs():
+    for d in (INBOX, OUTBOX, TASKS):
+        d.mkdir(parents=True, exist_ok=True)
+
+
+def _put(folder, payload):
+    """Write one queue file atomically: readers never see half a file."""
+    _dirs()
+    name = f"{time.time_ns()}-{os.getpid()}"
+    tmp = folder / f".{name}.tmp"
+    tmp.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+    tmp.replace(folder / name)
+
+
+def ensure_daemon():
+    if not CONF.is_file():
+        return False
+    _dirs()
+    try:
+        os.kill(int(PID.read_text()), 0)
+        return True
+    except Exception:
+        pass
+    p = subprocess.Popen([sys.executable, __file__, "--daemon"], cwd=str(ROOT), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    PID.write_text(str(p.pid))
+    return True
+
+
+def receive():
+    if not ensure_daemon():
+        return ""
+    out = []
+    for path in sorted(INBOX.glob("[0-9]*")):
+        try:
+            out.append(path.read_text())
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    return "\n\n".join(out)
+
+
+def send(content):
+    if not ensure_daemon():
+        raise RuntimeError(f"hive channel not configured: no {CONF}")
+    _put(OUTBOX, {"action": "progress", "task": "", "text": str(content), "via": "send"})
+
+
+# ---------------------------------------------------------------- daemon ------------------------
+
+class Failed(Exception):
+    pass
+
+
+def log(msg):
+    with LOG.open("a") as f:
+        f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}\n")
+
+
+def tell(text):
+    _put(INBOX, text)
+
+
+class Hive:
+    """The record and the agent's clones, as config.json describes them."""
+
+    def __init__(self, conf):
+        self.c = conf
+        self.actor = conf["actor"]
+        self.ws = conf["workspace"]          # {"repository": ..., "clone": ..., "branch": ...}
+        self.repos = conf.get("repos", {})   # code repository name -> the agent's clone
+        # Pins resolve commits in the registry's local_path: point it at this agent's own clones,
+        # as hive-runtime's launcher does for a task folder.
+        reg = json.loads(Path(conf["registry"]).read_text())
+        for name, clone in [(self.ws["repository"], self.ws["clone"]), *self.repos.items()]:
+            if name not in reg["repositories"]:
+                raise Failed(f"{name} isn't in the registry {conf['registry']}")
+            reg["repositories"][name]["local_path"] = clone
+        (RUN / "registry.json").write_text(json.dumps(reg, indent=1))
+        self.env = {**os.environ, "HIVE_URL": conf["hive_url"], "HIVE_ID": conf["hive_id"],
+                    "HIVE_KEY_FILE": conf["key_file"], "HIVE_VIA": f"iter:{self.actor}",
+                    "HIVEPIN_REPOSITORY_REGISTRY_PATH": str(RUN / "registry.json")}
+
+    def run(self, *cmd, cwd=None, check=True):
+        r = subprocess.run(cmd, cwd=cwd, env=self.env, capture_output=True, text=True, timeout=300)
+        if check and r.returncode != 0:
+            raise Failed(f"{' '.join(cmd[:3])}: {(r.stderr or r.stdout).strip()[-400:]}")
+        return r.stdout
+
+    def hive(self, *args):
+        return self.run(self.c.get("hive_bin", "hive"), *args)
+
+    def git(self, clone, *args, check=True):
+        return self.run("git", "-C", clone, *args, check=check)
+
+    def state(self):
+        return json.loads(self.hive("state"))
+
+    def emit(self, etype, task, data=None, refs=()):
+        args = ["emit", etype, "--task", task]
+        if data is not None:
+            args += ["--data", json.dumps(data)]
+        for rel, pin in refs:
+            args += ["--ref", f"{rel}={pin}"]
+        out = self.hive(*args)
+        try:
+            return json.loads(out)
+        except ValueError:
+            raise Failed(out.strip()[-400:])
+
+    def pin(self, repository, commit, path=None, name="pin"):
+        f = RUN / "pins" / f"{name}-{time.time_ns()}.json"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        args = [self.c.get("hive_pin_bin", "hive-pin"), "mint", repository] + ([path] if path else [])
+        self.run(*args, "--commit", commit, "--output", str(f))
+        return str(f)
+
+    def read_pin(self, pin):
+        """A pin's text from the agent's workspace clone, or a pointer to it."""
+        if not pin:
+            return ""
+        repo, sha, path = pin.get("repository"), pin.get("commit_oid", "").split(":")[-1], pin.get("path")
+        where = f"{repo}@{sha[:12]}" + (f":{path}" if path else "")
+        if repo != self.ws["repository"] or not path:
+            return f"({where})"
+        clone = self.ws["clone"]
+        self.git(clone, "fetch", "-q", "origin", check=False)
+        text = self.git(clone, "show", f"{sha}:{path}", check=False)
+        if not text:
+            return f"({where}: not readable in {clone})"
+        return f"({where})\n{text[:MAX_TEXT]}" + ("\n[... truncated]" if len(text) > MAX_TEXT else "")
+
+    def report(self, task, kind, text):
+        """Commit a report to the workspace, push it, and return its pin."""
+        clone, branch = self.ws["clone"], self.ws.get("branch", "main")
+        self.git(clone, "fetch", "-q", "origin")
+        self.git(clone, "checkout", "-q", branch)
+        self.git(clone, "merge", "-q", "--ff-only", f"origin/{branch}")
+        project = task.get("project") or "tasks"
+        day = datetime.date.today().isoformat()
+        rel_dir = Path("projects") / project / "reports"
+        n = 1
+        while (Path(clone) / rel_dir / f"{day}-{task['id']}-{kind}-{n}.md").exists():
+            n += 1
+        rel = rel_dir / f"{day}-{task['id']}-{kind}-{n}.md"
+        (Path(clone) / rel).parent.mkdir(parents=True, exist_ok=True)
+        (Path(clone) / rel).write_text(f"# {task['id']}: {kind} {n}\n\n{self.actor}, {day}\n\n{text.strip()}\n")
+        self.git(clone, "add", str(rel))
+        self.git(clone, "-c", f"user.name={self.actor}", "-c", f"user.email={self.actor}@{self.c['hive_id']}.invalid",
+                 "commit", "-q", "-m", f"{task['id']}: {kind} {n}")
+        self.git(clone, "push", "-q", "origin", f"HEAD:{branch}")
+        return self.pin(self.ws["repository"], self.git(clone, "rev-parse", "HEAD").strip(), str(rel), kind)
+
+
+def find_task(h, st, task_id, roles=("owner",)):
+    if task_id:
+        t = st["tasks"].get(task_id)
+        if not t:
+            raise Failed(f"no task {task_id} on the record")
+        return t
+    mine = [t for t in st["tasks"].values() if t.get("owner") == h.actor and t["status"] in ("in_progress", "blocked")]
+    if len(mine) != 1:
+        raise Failed(f"say which task: you have {len(mine)} open tasks"
+                     + (f" ({', '.join(t['id'] for t in mine)})" if mine else ""))
+    return mine[0]
+
+
+def do(h, req):
+    """One queued action. Returns the line the agent sees."""
+    st = h.state()
+    action, text = req["action"], (req.get("text") or "").strip()
+    t = find_task(h, st, req.get("task", ""))
+    tid = t["id"]
+    if action == "accept":
+        h.emit("task.accepted", tid)
+        base = {}
+        for r in (t.get("ext") or {}).get("repos") or []:
+            if r not in h.repos:
+                raise Failed(f"accepted, but {r} has no clone in config.json; you can't post a result for it")
+            base[r] = h.git(h.repos[r], "rev-parse", "HEAD").strip()
+        (TASKS / f"{tid}.json").write_text(json.dumps({"base": base}))
+        return f"accepted {tid}" + (f"; base {', '.join(f'{r} {c[:12]}' for r, c in base.items())}" if base else "")
+    if action in ("progress", "checkpoint"):
+        if not text:
+            raise Failed("a report needs text")
+        e = h.emit("task.reported", tid, {"kind": action}, [("report", h.report(t, action, text))])
+        return f"{action} report on {tid} at position {e['position']}"
+    if action == "block":
+        needs = req.get("extra") or "decision"
+        if needs not in ("decision", "information", "access", "external"):
+            raise Failed("block needs extra = decision, information, access or external")
+        if not text:
+            raise Failed("a question needs text")
+        q = h.report(t, "question", text)
+        e = h.emit("task.blocked", tid, {"needs": needs, "reason": text.splitlines()[0][:500]}, [("question", q)])
+        return f"{tid} is blocked (needs {needs}) at position {e['position']}; you'll get the answer here"
+    if action == "unblock":
+        e = h.emit("task.unblocked", tid)
+        return f"{tid} unblocked at position {e['position']}"
+    if action == "result":
+        if not text:
+            raise Failed("a result needs its report text")
+        refs, base = [], {}
+        f = TASKS / f"{tid}.json"
+        if f.is_file():
+            base = json.loads(f.read_text()).get("base", {})
+        for r in (t.get("ext") or {}).get("repos") or []:
+            if r not in h.repos or r not in base:
+                raise Failed(f"no clone or no recorded base for {r}: accept the task through this tool first")
+            clone = h.repos[r]
+            head = h.git(clone, "rev-parse", "HEAD").strip()
+            h.git(clone, "fetch", "-q", "origin")
+            pushed = h.git(clone, "branch", "-r", "--contains", head, check=False).strip()
+            if not pushed:
+                raise Failed(f"push {r} first: its HEAD {head[:12]} is on no remote branch")
+            refs += [("code", h.pin(r, head, name="code")), ("base", h.pin(r, base[r], name="base"))]
+        e = h.emit("task.result_posted", tid, None, [("result", h.report(t, "result", text))] + refs)
+        return f"result posted on {tid} at position {e['position']}; a reviewer will look at it"
+    if action == "review":
+        verdict = req.get("extra")
+        if verdict not in ("passed", "failed", "needs_information"):
+            raise Failed("review needs extra = passed, failed or needs_information")
+        if t.get("assigned_reviewer") != h.actor or not t.get("current_result"):
+            raise Failed(f"you aren't the assigned reviewer of {tid}'s current result")
+        e = h.emit("review.recorded", tid, {"verdict": verdict, "result_event": t["current_result"]["event_id"]},
+                   [("review", h.report(t, "review", text or verdict))])
+        return f"review of {tid}: {verdict}, at position {e['position']}"
+    raise Failed(f"unknown action {action}")
+
+
+def poll(h):
+    """Turn what changed on the record into messages for the agent. The first poll after the channel
+    starts reports everything still waiting on the agent; later ones, only what changed."""
+    st = h.state()
+    seen = json.loads(SEEN.read_text()) if SEEN.is_file() else {}
+    first = not SEEN.is_file()
+    for t in sorted(st["tasks"].values(), key=lambda t: t["id"]):
+        tid, prev, now = t["id"], seen.get(t["id"], {}), {}
+        if t.get("owner") == h.actor:
+            now["status"] = t["status"]
+            if t["status"] == "assigned" and prev.get("status") != "assigned":
+                tell(f"New task {tid} for you: {t.get('title', '')}\nOrder: {h.read_pin(t.get('order'))}\n\n"
+                     f"Accept it with hive_task(action='accept', task='{tid}', text='', extra='') when you start.")
+            b = t.get("block") or {}
+            now["answered"] = bool(b.get("answered"))
+            if now["answered"] and not prev.get("answered") and t["status"] == "blocked":
+                ans = next((v for v in b.values() if isinstance(v, dict) and "commit_oid" in v), None)
+                tell(f"Your question on {tid} was answered: {h.read_pin(ans) or b.get('note', '')}\n"
+                     f"Continue with hive_task(action='unblock', task='{tid}', text='', extra='').")
+            lr = t.get("latest_review") or {}
+            now["review"] = lr.get("event_id")
+            if (lr and lr.get("event_id") != prev.get("review") and lr.get("verdict") != "passed"
+                    and (not first or t["status"] == "in_progress")):
+                tell(f"Review of your result on {tid}: {lr.get('verdict')} ({lr.get('reviewer')})\n"
+                     f"{h.read_pin(lr.get('review_pin'))}\n\nAddress it and post a new result.")
+        cr = t.get("current_result") or {}
+        if t.get("assigned_reviewer") == h.actor and t["status"] == "in_review" and cr:
+            now["to_review"] = cr.get("event_id")
+            if prev.get("to_review") != cr.get("event_id"):
+                tell(f"Review {tid} ({t.get('title', '')}): its result by {cr.get('author')} against its order.\n"
+                     f"Order: {h.read_pin(t.get('order'))}\n\nResult: {h.read_pin(cr.get('pin'))}\n\n"
+                     f"Record your verdict with hive_task(action='review', task='{tid}', text='<findings>', "
+                     f"extra='passed|failed|needs_information').")
+        if now:
+            seen[tid] = now
+    SEEN.write_text(json.dumps(seen))
+    if first:
+        mine = [t["id"] for t in st["tasks"].values()
+                if t.get("owner") == h.actor and t["status"] in ("assigned", "in_progress", "blocked")]
+        tell(f"hive channel connected as {h.actor}." + (f" Open tasks: {', '.join(mine)}." if mine else ""))
+
+
+def daemon():
+    _dirs()
+    PID.write_text(str(os.getpid()))
+    try:
+        h = Hive(json.loads(CONF.read_text()))
+    except (Failed, OSError, ValueError, KeyError) as e:
+        tell(f"hive channel can't start: {e}. Fix {CONF}.")
+        log(f"can't start: {e}")
+        return
+    every = int(h.c.get("poll_seconds", 30))
+    next_poll = 0.0
+    while True:
+        for path in sorted(OUTBOX.glob("[0-9]*")):
+            try:
+                req = json.loads(path.read_text())
+                path.unlink()
+            except (FileNotFoundError, ValueError):
+                continue
+            try:
+                tell(f"OK: {do(h, req)}")
+            except (Failed, subprocess.TimeoutExpired, KeyError) as e:
+                tell(f"FAILED: {req.get('action')} {req.get('task') or ''}: {e}")
+            log(f"did {req.get('action')} {req.get('task')}")
+            next_poll = 0.0
+        if time.time() >= next_poll:
+            try:
+                poll(h)
+            except Exception as e:   # keep running through record or network errors
+                log(f"poll failed: {type(e).__name__}: {e}")
+            next_poll = time.time() + every
+        time.sleep(1)
+
+
+if __name__ == "__main__" and "--daemon" in sys.argv:
+    daemon()
