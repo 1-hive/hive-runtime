@@ -2,7 +2,7 @@
 
 How agents do work on a hive record: launching workers, dispatching independent reviews, supervising stuck work, cleaning up, and the chief of staff's tools. It's the operating loop from 1-hive's plan (Phase E), a minimal form of One Hive release R6.
 
-**Status (2026-10-19):** extracted from [1-hive](https://github.com/1-hive/1-hive) with its history, and not yet generalized. The code still has 1-hive's paths and its per-task container setup. Next: configuration per hive, and an adapter for long-lived agents (an Iter `hive` channel) next to the per-task launcher.
+**Status (2026-10-19):** extracted from [1-hive](https://github.com/1-hive/1-hive) with its history. Paths and ids are configuration (below); 1-hive runs it with the defaults. Next: an adapter for long-lived agents (an Iter `hive` channel) next to the per-task launcher.
 
 - **Launching work:** `launch-task.sh` (one attempt per assigned task, in the agent's own rootless container, routed by hive-route), `watch-task.sh`, `result-refs.sh`, `agent/` (the agent image), `agent-users.sh` (one OS user per agent).
 - **The loop:** `dispatcher.py` (launches workers and independent reviewers), `supervisor.py` (nudges, restarts, reassigns, escalates), `sweeper.py` (removes task folders the record no longer needs).
@@ -12,3 +12,24 @@ How agents do work on a hive record: launching workers, dispatching independent 
 - `docs/worker-contract.md`: what a worker must do on the record.
 
 Related: [hive-record](https://github.com/1-hive/hive-record) (R1 + R2), [hive-bridge](https://github.com/1-hive/hive-bridge) (where humans meet the hive), [hive-route](https://github.com/1-hive/hive-route) (R8), [hive-pin](https://github.com/1-hive/hive-pin) (R0).
+
+## Configuration
+
+Every tool reads the same environment variables (`paths.sh` for the shell tools, `hive_paths.py` for the Python ones). The defaults are 1-hive's layout, so 1-hive sets none of them; another hive sets the ones that differ, e.g. in its systemd units.
+
+| Variable | Default | What it is |
+|---|---|---|
+| `HIVE_ID` | `1-hive` | The hive's id on its record |
+| `HIVE_GATEWAY_PORT` | `8470` | The record gateway's port on the host. Inside an agent container the record is always at `127.0.0.1:8470` (`agent/hive-entry`) |
+| `HIVE_URL` | `http://127.0.0.1:$HIVE_GATEWAY_PORT` | The record gateway, from the host |
+| `HIVE_CONFIG_DIR` | `~/.config/hive` | Keys and secrets: `agents/<actor>.key`, `operator.key`, `claude-oauth-token`, `gateway.env`, `route-overrides.json` |
+| `HIVE_WORK_DIR` | `~/work/1hive` | Task folders, and the tools' state (`.ports`, `.route`, `.supervisor`, `.sweeper`, `cos`) |
+| `HIVE_REPOS_DIR` | `~/repos` | The hive's git remotes, `<name>.git` |
+| `HIVE_DEPLOY_DIR` | `$HIVE_REPOS_DIR/1-hive/deploy` | The hive's declared configuration: `registry.json`, `route-table.yaml`, `route-sources.yaml`, `review-allowlist.json`, `runtime` |
+| `HIVE_WORKSPACE_REPO` | `$HIVE_REPOS_DIR/hive-workspace.git` | The workspace remote (orders, reports, questions) |
+| `HIVE_ROUTE_DIR` | `$HIVE_REPOS_DIR/hive-route` | The router's checkout |
+| `HIVE_DEFAULT_REPO` | `mtg-player` | The code repository every task folder holds; others come as `EXTRA_REPOS` |
+
+Two need care, because they're read outside the operator's session:
+- `git/hive-git-shell` runs as sshd's forced command, with a clean environment. A hive whose repositories aren't in `~/repos` writes `HIVE_REPOS_DIR=…` into the forced command.
+- `agent-users.sh` runs under `sudo`: pass `HIVE_WORK_DIR` on its command line when it isn't the default.

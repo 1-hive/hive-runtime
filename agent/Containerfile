@@ -17,7 +17,7 @@ ENV HOME=/root PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/u
 ARG HIVERECORD_REV=v1.1.0
 RUN uv tool install --with-executables-from hivepin "hiverecord @ git+https://github.com/1-hive/hive-record@${HIVERECORD_REV}" \
     && hive --help >/dev/null && hive-pin --help >/dev/null
-# The chief of staff's MCP server over the record (tools/hive-mcp.py).
+# The chief of staff's MCP server over the record (hive-mcp.py).
 COPY hive-mcp.py /opt/hive-mcp/hive-mcp.py
 RUN uv venv -q /opt/hive-mcp/venv && uv pip install -q --python /opt/hive-mcp/venv/bin/python "mcp>=2,<3" \
     && /opt/hive-mcp/venv/bin/python -c "from mcp.server.mcpserver import MCPServer"

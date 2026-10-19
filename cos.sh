@@ -8,29 +8,29 @@
 #                   A separate, continuing conversation in /cos/chat, sharing the same record and files.
 #   cos.sh stop
 #
-# The container runs as OS user hive-cos (deploy/agent-users.sh). It holds only:
+# The container runs as OS user hive-cos (agent-users.sh). It holds only:
 # - cos's record key and git key, and the Claude token, as Podman secrets;
 # - ~/work/1hive/cos, mounted at /cos: its workspace clone, its Claude Code state, and
 #   CLAUDE.md (docs/chief-of-staff.md);
-# - the record, model gateway and sshd, through tools/agent-ports.py's sockets.
+# - the record, model gateway and sshd, through agent-ports.py's sockets.
 # The registry's file:// fetch URLs reach the host's repositories over sshd, as cos's git does
 # (hive-pin refuses a user name in a registry URL, so git rewrites them instead).
-# Its MCP server `hive` is tools/hive-mcp.py, installed in the image.
+# Its MCP server `hive` is hive-mcp.py, installed in the image.
 set -euo pipefail
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/paths.sh"
 U=hive-cos NAME=cos
 P=(sudo -n -u "$U" /usr/local/bin/hive-agent-podman)
-D=$HOME/work/1hive/cos A=$HOME/.config/hive/agents
-REPO=/home/omegahive/repos/1-hive
+D=$HIVE_WORK_DIR/cos A=$HIVE_CONFIG_DIR/agents
 MODEL=${COS_MODEL:-claude-opus-5-5}
 CLAUDE="claude --model $MODEL --permission-mode auto --mcp-config /cos/mcp.json"
 
 setup() {
-  id "$U" >/dev/null 2>&1 || { echo "no OS user $U: sudo $REPO/deploy/agent-users.sh cos" >&2; exit 2; }
+  id "$U" >/dev/null 2>&1 || { echo "no OS user $U: sudo $RUNTIME_DIR/agent-users.sh cos" >&2; exit 2; }
   mkdir -p "$D/chat" "$D/.claude-state" "$D/followups"
-  [ -d "$D/workspace/.git" ] || git clone -q /home/omegahive/repos/hive-workspace.git "$D/workspace"
-  cp "$REPO/docs/chief-of-staff.md" "$D/CLAUDE.md"
+  [ -d "$D/workspace/.git" ] || git clone -q "$HIVE_WORKSPACE_REPO" "$D/workspace"
+  cp "$RUNTIME_DIR/docs/chief-of-staff.md" "$D/CLAUDE.md"
   printf '%s\n' '{"mcpServers": {"hive": {"command": "/opt/hive-mcp/venv/bin/python", "args": ["/opt/hive-mcp/hive-mcp.py"]}}}' > "$D/mcp.json"
-  jq '.repositories.workspace.local_path = "/cos/workspace"' "$REPO/deploy/registry.json" > "$D/registry.json"
+  jq '.repositories.workspace.local_path = "/cos/workspace"' "$HIVE_DEPLOY_DIR/registry.json" > "$D/registry.json"
   # Files cos created are its own (and already carry the default ACL): skip those.
   setfacl -R -m "u:$U:rwX,d:u:$U:rwX,d:u:$USER:rwX" "$D" 2>/dev/null || true
   local want; want=$(podman image inspect --format '{{.Id}}' localhost/1hive-agent:latest)
@@ -44,7 +44,7 @@ setup() {
   secret key "$A/cos.key"
   secret ssh "$A/cos.ssh"
   secret known-hosts "$A/known_hosts"
-  secret claude-token "$HOME/.config/hive/claude-oauth-token"
+  secret claude-token "$HIVE_CONFIG_DIR/claude-oauth-token"
 }
 
 case "${1:-}" in
@@ -52,21 +52,21 @@ case "${1:-}" in
     setup
     "${P[@]}" rm -f "$NAME" >/dev/null 2>&1 || true
     exec "${P[@]}" run --rm --name "$NAME" --init --network slirp4netns \
-      -v "$HOME/work/1hive/.ports:/run/hive-ports:ro" --group-add keep-groups \
+      -v "$HIVE_WORK_DIR/.ports:/run/hive-ports:ro" --group-add keep-groups \
       -v "$D:/cos" -w /cos \
       --secret "cos.key,type=mount,target=/keys/cos.key,mode=0400" \
       --secret "cos.ssh,type=mount,target=/root/.ssh/id_ed25519,mode=0400" \
       --secret "cos.known-hosts,type=mount,target=/root/.ssh/known_hosts,mode=0444" \
       --secret "cos.claude-token,type=env,target=CLAUDE_CODE_OAUTH_TOKEN" \
-      -e HIVE_URL=http://127.0.0.1:8470 -e HIVE_ID=1-hive -e HIVE_KEY_FILE=/keys/cos.key \
+      -e HIVE_URL=http://127.0.0.1:8470 -e "HIVE_ID=$HIVE_ID" -e HIVE_KEY_FILE=/keys/cos.key \
       -e HIVE_VIA=claude-code:cos -e HIVEPIN_REPOSITORY_REGISTRY_PATH=/cos/registry.json \
       -e CLAUDE_CONFIG_DIR=/cos/.claude-state -e TZ=CST6 \
-      -e GIT_CONFIG_COUNT=3 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@127.0.0.1/home/omegahive/repos/.insteadOf" \
-      -e GIT_CONFIG_VALUE_0=/home/omegahive/repos/ -e GIT_CONFIG_KEY_1=safe.directory -e 'GIT_CONFIG_VALUE_1=*' \
-      -e "GIT_CONFIG_KEY_2=url.ssh://$USER@127.0.0.1/home/omegahive/repos/.insteadOf" \
-      -e GIT_CONFIG_VALUE_2=file:///home/omegahive/repos/ \
-      -e GIT_AUTHOR_NAME=cos -e GIT_AUTHOR_EMAIL=cos@1-hive.invalid \
-      -e GIT_COMMITTER_NAME=cos -e GIT_COMMITTER_EMAIL=cos@1-hive.invalid \
+      -e GIT_CONFIG_COUNT=3 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@127.0.0.1$HIVE_REPOS_DIR/.insteadOf" \
+      -e "GIT_CONFIG_VALUE_0=$HIVE_REPOS_DIR/" -e GIT_CONFIG_KEY_1=safe.directory -e 'GIT_CONFIG_VALUE_1=*' \
+      -e "GIT_CONFIG_KEY_2=url.ssh://$USER@127.0.0.1$HIVE_REPOS_DIR/.insteadOf" \
+      -e "GIT_CONFIG_VALUE_2=file://$HIVE_REPOS_DIR/" \
+      -e GIT_AUTHOR_NAME=cos -e "GIT_AUTHOR_EMAIL=cos@$HIVE_ID.invalid" \
+      -e GIT_COMMITTER_NAME=cos -e "GIT_COMMITTER_EMAIL=cos@$HIVE_ID.invalid" \
       localhost/1hive-agent:latest bash -c \
       "tmux new-session -d -s cos -x 200 -y 50 -c /cos '$CLAUDE --continue || $CLAUDE'
        while tmux has-session -t cos 2>/dev/null; do sleep 15; done" ;;

@@ -10,8 +10,9 @@
 # the watch's start, so a restarted worker gets a full interval), or the
 # session disappearing.
 set -uo pipefail
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/paths.sh"
 TASK=$1 SESSION=${2:-} MAX_H=${3:-12}
-export HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$HOME/.config/hive/agents/cos.key
+export HIVE_URL HIVE_ID HIVE_KEY_FILE=$HIVE_CONFIG_DIR/agents/cos.key
 START=$(hive health | python3 -c 'import json,sys; print(json.load(sys.stdin)["head"])')
 WATCH_START=$(date +%s)
 END=$(( WATCH_START + MAX_H * 3600 ))

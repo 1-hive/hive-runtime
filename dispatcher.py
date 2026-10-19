@@ -5,7 +5,7 @@ Deterministic, no model (1-hive PLAN, Phase E items 1 and 2). Every tick it read
 as actor `dispatcher` (class coordinator, its own key) and:
 
 - **Workers.** For each task `assigned` to a worker whose task folder has no attempt yet, it
-  writes the kickoff from the record and launches the owner (tools/launch-task.sh). For each
+  writes the kickoff from the record and launches the owner (launch-task.sh). For each
   `blocked` task answered since its block (`task.answered`) whose worker isn't running, it
   relaunches the owner to read the answer, unblock and continue. The chief of staff only
   creates and assigns tasks and answers questions; restarts stay with the supervisor.
@@ -13,7 +13,7 @@ as actor `dispatcher` (class coordinator, its own key) and:
 
 1. writes the reviewer's kickoff from the record (goal, order, result, its code refs);
 2. emits `review.assigned` to the first reviewer that isn't the result's author
-   (REVIEWERS, in order) and launches it through tools/launch-task.sh;
+   (REVIEWERS, in order) and launches it through launch-task.sh;
 3. if the router has no route for that reviewer now (launcher exit 3: capacity, or the
    review-family rule), tries the next one; if none can run, retries after RETRY seconds.
 
@@ -40,14 +40,13 @@ import sys
 import time
 from pathlib import Path
 
+import hive_paths as hp
 from supervisor import alive, failure_class, latest_attempt
 
-ROOT = Path.home() / "work" / "1hive"
+ROOT = hp.WORK_DIR
 HOME = ROOT / ".dispatcher"
 LAUNCH = Path(__file__).resolve().parent / "launch-task.sh"
-ENV = {**os.environ, "HIVE_URL": "http://127.0.0.1:8470", "HIVE_ID": "1-hive",
-       "HIVE_KEY_FILE": str(Path.home() / ".config/hive/agents/dispatcher.key"),
-       "HIVE_VIA": "dispatcher", "PATH": f"{Path.home()}/.local/bin:{os.environ.get('PATH', '')}"}
+ENV = hp.tool_env(hp.CONFIG_DIR / "agents" / "dispatcher.key", "dispatcher")
 REVIEWERS = ("reviewer.codex.1", "reviewer.claude.1")   # in order of preference
 RETRY = 600
 ROUTE = ROOT / ".route"
@@ -66,7 +65,7 @@ Your task folder `{{DIR}}` is as you left it, but this is a fresh container: any
 1. `source {{DIR}}/hive.env`, read the answer, then emit `task.unblocked`.
 2. Continue the order: `{{DIR}}/workspace/{order_path}`. Read `{{DIR}}/WORKER-CONTRACT.md` again, especially "Running mode".
 """
-CODE_HOME = "mtg-player"   # the repository every task folder holds; others come as EXTRA_REPOS
+CODE_HOME = os.environ.get("HIVE_DEFAULT_REPO") or "mtg-player"   # the repository every task folder holds; others come as EXTRA_REPOS
 
 KICKOFF = """You are **{reviewer}**, an independent reviewer in the 1-hive record, in your own container. You review task **{task}** (goal `{goal}`, project `{project}`): its current result, event `{result_event}`.
 
@@ -138,7 +137,7 @@ def kickoff(t: dict, reviewer: str, state: dict) -> Path:
     n = len(list((ROOT / f"{task}-review").glob("*.log")) + list((ROOT / f"{task}-review").glob("*.jsonl"))) \
         if (ROOT / f"{task}-review").is_dir() else 0
     day = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
-    review_path = f"projects/{t.get('project') or 'mtg-player'}/reports/{day}-{task}-review{'' if n == 0 else f'-{n + 1}'}.md"
+    review_path = f"projects/{t.get('project') or CODE_HOME}/reports/{day}-{task}-review{'' if n == 0 else f'-{n + 1}'}.md"
     text = KICKOFF.format(
         reviewer=reviewer, task=task, goal=t.get("goal"), project=t.get("project"),
         result_event=res["event_id"], goal_path=(goal.get("goal_pin") or {}).get("path", "(see the order)"),

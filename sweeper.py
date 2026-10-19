@@ -38,13 +38,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path.home() / "work" / "1hive"
+import hive_paths as hp
+
+ROOT = hp.WORK_DIR
 LOG = ROOT / ".sweeper" / "log.jsonl"
-REGISTRY = Path(__file__).resolve().parents[1] / "deploy" / "registry.json"
+REGISTRY = hp.DEPLOY_DIR / "registry.json"
 AGENT_PODMAN = "/usr/local/bin/hive-agent-podman"
-ENV = {**os.environ, "HIVE_URL": "http://127.0.0.1:8470", "HIVE_ID": "1-hive",
-       "HIVE_KEY_FILE": str(Path.home() / ".config/hive/floor.key"),
-       "PATH": f"{Path.home()}/.local/bin:{os.environ.get('PATH', '')}"}
+ENV = hp.tool_env(hp.CONFIG_DIR / "floor.key")
 NOT_TASKS = {"cos", "canary", "play"}
 
 

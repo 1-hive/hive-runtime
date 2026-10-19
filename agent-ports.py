@@ -12,7 +12,7 @@ each container, to the services agents need:
 
 Inside, the agent image's hive-entry listens on those same ports on the container's
 loopback and relays them to the sockets. Sockets are in ~/work/1hive/.ports, which
-only the group `hive` may enter (deploy/agent-users.sh).
+only the group `hive` may enter (agent-users.sh).
 
     agent-ports.py [--dir ~/work/1hive/.ports]
 """
@@ -25,7 +25,9 @@ import os
 import subprocess
 from pathlib import Path
 
-PORTS = {"record.sock": 8470, "gateway.sock": 4000, "ssh.sock": 22}
+import hive_paths as hp
+
+PORTS = {"record.sock": hp.GATEWAY_PORT, "gateway.sock": 4000, "ssh.sock": 22}
 
 
 async def pipe(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
@@ -55,7 +57,7 @@ def handler(port: int):
 
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--dir", default=str(Path.home() / "work" / "1hive" / ".ports"))
+    ap.add_argument("--dir", default=str(hp.WORK_DIR / ".ports"))
     a = ap.parse_args()
     d = Path(a.dir)
     d.mkdir(parents=True, exist_ok=True)

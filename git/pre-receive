@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installed in each hive bare repository (tools/git/install.sh). Only agents' pushes are
+# Installed in each hive bare repository (git/install.sh). Only agents' pushes are
 # limited (HIVE_GIT_ACTOR, set by hive-git-shell); the operator's own pushes pass.
 # Agents may create or fast-forward refs/heads/hive/<anything>, and fast-forward the
 # workspace's main (reports go there). Nothing else: no deletions, no rewrites, no tags,

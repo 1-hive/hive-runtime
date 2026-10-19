@@ -11,7 +11,7 @@
 #           base.json ({"mtg-player": "<sha>"}): the worker pins it as the result's base.
 #           Re-running for an existing folder relaunches in it (a restart, same base).
 # reviewer: in ~/work/1hive/<task-id>-review, mtg-player on hive/<task-id>. The reviewer
-#           reviews base..code from the result's pins (tools/result-refs.sh), not the branch.
+#           reviews base..code from the result's pins (result-refs.sh), not the branch.
 #
 # The kickoff file may use {DIR} for the task folder; it is copied to KICKOFF.md.
 #
@@ -34,7 +34,7 @@
 #                     (its base recorded in base.json), a reviewer gets hive/<task>, or main when
 #                     the task left that repo unchanged (no branch pushed).
 #   ROUTE_RUNTIME     host or container (default: deploy/runtime). The container runtime needs the
-#                     agent image (deploy/agent/build.sh), git keys (tools/git/install.sh) and, for
+#                     agent image (agent/build.sh), git keys (git/install.sh) and, for
 #                     Claude Code, ~/.config/hive/claude-oauth-token (`claude setup-token`).
 #   ROUTE_OVERRIDE    JSON {"route_id": ..., "reason": ..., "by": "operator"}: an operator's
 #                     explicit choice (RT1), e.g. a same-family review when no other family has
@@ -46,6 +46,7 @@
 #                     ({route_id, reason, by}) is the fallback when the router can't route a review now.
 # Claude Code runs in print mode with auto permissions; Codex runs `exec`.
 set -euo pipefail
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/paths.sh"
 ROLE=$1 TASK=$2 ACTOR=$3 KICKOFF=$4 BASE=${5:-main}
 # Ids go into paths, a Codex config override and an HTTP header: only the record's id syntax.
 ID='^[a-z0-9][a-z0-9._-]{0,63}$'
@@ -53,27 +54,28 @@ ID='^[a-z0-9][a-z0-9._-]{0,63}$'
   || { echo "task and actor ids must match $ID" >&2; exit 2; }
 case "$ROLE" in worker|reviewer) ;; *) echo "role must be worker or reviewer" >&2; exit 2 ;; esac
 [[ "$BASE" =~ ^[A-Za-z0-9._/-]+$ && "$BASE" != -* ]] || { echo "bad base branch" >&2; exit 2; }
-ROOT=$HOME/work/1hive
+ROOT=$HIVE_WORK_DIR
+CODE=$HIVE_DEFAULT_REPO   # the repository every task folder holds; others come as EXTRA_REPOS
 DIR=$ROOT/$TASK; [ "$ROLE" = reviewer ] && DIR=$ROOT/$TASK-review
-SEED_BUILD=${SEED_BUILD:-$ROOT/hbp-1-feasibility/mtg-player/adapters/xmage-external-seat/.build}
-KEY=$HOME/.config/hive/agents/$ACTOR.key
+SEED_BUILD=${SEED_BUILD:-$ROOT/hbp-1-feasibility/$CODE/adapters/xmage-external-seat/.build}
+KEY=$HIVE_CONFIG_DIR/agents/$ACTOR.key
 [ -f "$KEY" ] || { echo "no key for $ACTOR" >&2; exit 2; }
 # Where the attempt runs: `host`, as the operator's user, or `container`: its own rootless Podman
 # container (PLAN Phase E 1; SPEC §6.6), holding only this task's folder, this actor's record and
 # git keys, and the harness's credentials. Default: deploy/runtime. Reported to the router.
 # A task folder keeps the runtime it was first launched with, so a supervisor restart doesn't move it.
-RTF=$HOME/work/1hive/.route/$(basename "$DIR")/runtime
-RUNTIME=${ROUTE_RUNTIME:-$(cat "$RTF" 2>/dev/null || cat /home/omegahive/repos/1-hive/deploy/runtime 2>/dev/null || echo host)}
+RTF=$ROOT/.route/$(basename "$DIR")/runtime
+RUNTIME=${ROUTE_RUNTIME:-$(cat "$RTF" 2>/dev/null || cat "$HIVE_DEPLOY_DIR/runtime" 2>/dev/null || echo host)}
 case "$RUNTIME" in
-  host) H=127.0.0.1 ;;
+  host) H=127.0.0.1 HP=$HIVE_GATEWAY_PORT ;;
   container)   # in a container, the record, model gateway and sshd are relayed to its own loopback
-    H=127.0.0.1
-    [ -S "$HOME/work/1hive/.ports/record.sock" ] \
+    H=127.0.0.1 HP=8470   # agent/hive-entry relays the record to 8470 in every container
+    [ -S "$ROOT/.ports/record.sock" ] \
       || { echo "agent ports aren't up: systemctl --user start 1-hive-agent-ports" >&2; exit 2; }
-    [ -f "$HOME/.config/hive/agents/$ACTOR.ssh" ] && [ -f "$HOME/.config/hive/agents/known_hosts" ] \
-      || { echo "no git key for $ACTOR: the operator runs tools/git/install.sh" >&2; exit 2; }
+    [ -f "$HIVE_CONFIG_DIR/agents/$ACTOR.ssh" ] && [ -f "$HIVE_CONFIG_DIR/agents/known_hosts" ] \
+      || { echo "no git key for $ACTOR: the operator runs git/install.sh" >&2; exit 2; }
     case "$ACTOR" in reviewer.codex.*) ;; *)
-      grep -q '[^[:space:]]' "$HOME/.config/hive/claude-oauth-token" 2>/dev/null \
+      grep -q '[^[:space:]]' "$HIVE_CONFIG_DIR/claude-oauth-token" 2>/dev/null \
         || { echo "no ~/.config/hive/claude-oauth-token: the operator runs 'claude setup-token' and saves it there" >&2; exit 2; } ;;
     esac ;;
   *) echo "unknown runtime $RUNTIME (host or container)" >&2; exit 2 ;;
@@ -82,44 +84,44 @@ mkdir -p "$(dirname "$RTF")"; echo "$RUNTIME" > "$RTF"
 
 if [ ! -d "$DIR" ]; then
   mkdir -p "$DIR"
-  git clone -q /home/omegahive/repos/hive-workspace.git "$DIR/workspace"
+  git clone -q "$HIVE_WORKSPACE_REPO" "$DIR/workspace"
   if [ "$ROLE" = worker ]; then
-    git clone -q -b "$BASE" /home/omegahive/repos/mtg-player.git "$DIR/mtg-player"
-    git -C "$DIR/mtg-player" checkout -q -b "hive/$TASK"
+    git clone -q -b "$BASE" "$HIVE_REPOS_DIR/$CODE.git" "$DIR/$CODE"
+    git -C "$DIR/$CODE" checkout -q -b "hive/$TASK"
     # The result's base pin: where this task's change starts (hive-record SPEC §24.7).
-    jq -n --arg c "$(git -C "$DIR/mtg-player" rev-parse HEAD)" '{"mtg-player": $c}' > "$DIR/base.json"
+    jq -n --arg r "$CODE" --arg c "$(git -C "$DIR/$CODE" rev-parse HEAD)" '{($r): $c}' > "$DIR/base.json"
   else
-    # The task's code may live in another repo (e.g. the arena); then review mtg-player main.
-    git clone -q -b "hive/$TASK" /home/omegahive/repos/mtg-player.git "$DIR/mtg-player" 2>/dev/null \
-      || git clone -q /home/omegahive/repos/mtg-player.git "$DIR/mtg-player"
+    # The task's code may live in another repo (e.g. the arena); then review $CODE main.
+    git clone -q -b "hive/$TASK" "$HIVE_REPOS_DIR/$CODE.git" "$DIR/$CODE" 2>/dev/null \
+      || git clone -q "$HIVE_REPOS_DIR/$CODE.git" "$DIR/$CODE"
   fi
   for R in ${EXTRA_REPOS:-}; do
     [[ "$R" =~ $ID ]] || { echo "bad repo name $R" >&2; exit 2; }
     if [ "$ROLE" = worker ]; then
-      git clone -q "/home/omegahive/repos/$R.git" "$DIR/$R"
+      git clone -q "$HIVE_REPOS_DIR/$R.git" "$DIR/$R"
       git -C "$DIR/$R" checkout -q -b "hive/$TASK"
       jq --arg r "$R" --arg c "$(git -C "$DIR/$R" rev-parse HEAD)" '. + {($r): $c}' "$DIR/base.json" > "$DIR/base.json.tmp"
       mv "$DIR/base.json.tmp" "$DIR/base.json"
     else
       # No branch when the task left this repo unchanged (its code pin equals its base): review main.
-      git clone -q -b "hive/$TASK" "/home/omegahive/repos/$R.git" "$DIR/$R" 2>/dev/null \
-        || git clone -q "/home/omegahive/repos/$R.git" "$DIR/$R"
+      git clone -q -b "hive/$TASK" "$HIVE_REPOS_DIR/$R.git" "$DIR/$R" 2>/dev/null \
+        || git clone -q "$HIVE_REPOS_DIR/$R.git" "$DIR/$R"
     fi
   done
   if [ -d "$SEED_BUILD" ]; then
-    cp -a "$SEED_BUILD" "$DIR/mtg-player/adapters/xmage-external-seat/.build"
+    cp -a "$SEED_BUILD" "$DIR/$CODE/adapters/xmage-external-seat/.build"
   fi
-  python3 - "$DIR" ${EXTRA_REPOS:-} <<'EOF'
+  python3 - "$DIR" "$HIVE_DEPLOY_DIR/registry.json" "$CODE" ${EXTRA_REPOS:-} <<'EOF'
 import json, sys
 d = sys.argv[1]
-reg = json.load(open("/home/omegahive/repos/1-hive/deploy/registry.json"))
-for name in ["workspace", "mtg-player", *sys.argv[2:]]:
+reg = json.load(open(sys.argv[2]))
+for name in ["workspace", *sys.argv[3:]]:
     reg["repositories"][name]["local_path"] = f"{d}/{name}"
 json.dump(reg, open(f"{d}/registry.json", "w"), indent=2)
 EOF
 fi
-cp /home/omegahive/repos/1-hive/docs/worker-contract.md "$DIR/WORKER-CONTRACT.md"
-cp /home/omegahive/repos/1-hive/tools/result-refs.sh "$DIR/result-refs.sh"
+cp "$RUNTIME_DIR/docs/worker-contract.md" "$DIR/WORKER-CONTRACT.md"
+cp "$RUNTIME_DIR/result-refs.sh" "$DIR/result-refs.sh"
 sed "s#{DIR}#$DIR#g" "$KICKOFF" > "$DIR/KICKOFF.md"
 git -C "$DIR/workspace" pull -q --ff-only || true
 cd "$DIR"
@@ -128,10 +130,10 @@ cd "$DIR"
 # Table deploy/route-table.yaml; pool usage and qualifications from deploy/route-sources.yaml.
 # Every decision goes to $ROOT/route-log.jsonl (created in fixed mode); each attempt gets a
 # manifest ($ROOT/.route/<folder>/<role>.<n>.attempt.json) so the router can check which model ran.
-TABLE=/home/omegahive/repos/1-hive/deploy/route-table.yaml
-SOURCES=/home/omegahive/repos/1-hive/deploy/route-sources.yaml
+TABLE=$HIVE_DEPLOY_DIR/route-table.yaml
+SOURCES=$HIVE_DEPLOY_DIR/route-sources.yaml
 RLOG=$ROOT/route-log.jsonl
-hr() { uv run -q --frozen --project /home/omegahive/repos/hive-route hive-route "$@"; }
+hr() { uv run -q --frozen --project "$HIVE_ROUTE_DIR" hive-route "$@"; }
 [ -f "$RLOG" ] || hr mode fixed "$TABLE" --log "$RLOG" >/dev/null
 # Earlier attempts' reported models against their routes: logs drift, demotes the route.
 hr observe "$RLOG" "$ROOT/.route/*/*.attempt.json" --sources "$SOURCES" >&2 || true
@@ -160,9 +162,9 @@ if [ -n "${ROUTE_LAST_CLASS:-}" ] && [ -s "$HIST" ] && ! tail -n 1 "$HIST" | jq 
 fi
 HISTORY=$(jq -s -c '[.[] | select(.class) | {attempt, route_id, tier, pool, class, limited_until} | with_entries(select(.value != null))]' "$HIST")
 
-OVR=$HOME/.config/hive/route-overrides.json
+OVR=$HIVE_CONFIG_DIR/route-overrides.json
 if [ -z "${ROUTE_OVERRIDE:-}" ] && [ "$ROLE" = worker ] && [ -s "$OVR" ]; then
-  GOAL=$(HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY hive task "$TASK" 2>/dev/null | jq -r '.task.goal // empty')
+  GOAL=$(HIVE_URL=$HIVE_URL HIVE_ID=$HIVE_ID HIVE_KEY_FILE=$KEY hive task "$TASK" 2>/dev/null | jq -r '.task.goal // empty')
   ROUTE_OVERRIDE=$(jq -c --arg t "$TASK" --arg g "$GOAL" '.tasks[$t] // .goals[$g] // empty' "$OVR")
   [ -z "$ROUTE_OVERRIDE" ] || echo "operator override: $ROUTE_OVERRIDE"
 fi
@@ -175,7 +177,7 @@ if [ "$ROLE" = reviewer ]; then
   WDEC=$(jq -c '.decision // empty' <<<"${WEV:-{\}}")
   # Without ROUTE_FACTS, the review inherits the facts supplied for the work.
   [ -n "${ROUTE_FACTS:-}" ] || ROUTE_FACTS=$(jq -c '.request.facts // {} | del(.kind)' <<<"${WEV:-{\}}")
-  AUTHOR=$(uv run -q --frozen --project /home/omegahive/repos/hive-route python -c '
+  AUTHOR=$(uv run -q --frozen --project "$HIVE_ROUTE_DIR" python -c '
 import json, sys
 from hiveroute.table import load_table
 t = load_table(sys.argv[1])
@@ -230,7 +232,7 @@ fi
 # of its own (the actor's OS user, else the operator's). E.g. when the Claude pool passes its soft
 # threshold, a worker without a Codex login stays on Claude instead of failing every launch.
 CAN=()
-if grep -q '[^[:space:]]' "$HOME/.config/hive/claude-oauth-token" 2>/dev/null; then
+if grep -q '[^[:space:]]' "$HIVE_CONFIG_DIR/claude-oauth-token" 2>/dev/null; then
   mapfile -t CAN < <(grep -o 'harness: *claude-code[A-Za-z0-9_-]*' "$TABLE" | sed 's/harness: *//' | sort -u)
 fi
 AU0=hive-${ACTOR//./-}
@@ -270,13 +272,13 @@ fi
 # background, once that actor is registered; output in $ROOT/route-record.log. Decisions carry
 # their runtime (A4): until the operator has run deploy/apply-policy.sh for spec-v1.0-a4, the
 # record refuses them and the sync waits at that entry, losing nothing.
-RKEY=$HOME/.config/hive/agents/router.key
+RKEY=$HIVE_CONFIG_DIR/agents/router.key
 # Only the deployment's own log is ever synced (a copy of this block run on a scratch log once
 # posted test entries to the record).
-if [ "$RLOG" = "$HOME/work/1hive/route-log.jsonl" ] && [ -f "$RKEY" ] && HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$RKEY hive actors 2>/dev/null \
+if [ "$RLOG" = "$ROOT/route-log.jsonl" ] && [ -f "$RKEY" ] && HIVE_URL=$HIVE_URL HIVE_ID=$HIVE_ID HIVE_KEY_FILE=$RKEY hive actors 2>/dev/null \
     | jq -e 'any(.[]; .id == "router")' >/dev/null 2>&1; then
-  ( HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$RKEY HIVE_VIA=hive-route:router \
-      nohup uv run -q --frozen --project /home/omegahive/repos/hive-route hive-route record --with-runtime "$RLOG" \
+  ( HIVE_URL=$HIVE_URL HIVE_ID=$HIVE_ID HIVE_KEY_FILE=$RKEY HIVE_VIA=hive-route:router \
+      nohup uv run -q --frozen --project "$HIVE_ROUTE_DIR" hive-route record --with-runtime "$RLOG" \
       >> "$ROOT/route-record.log" 2>&1 & )
 fi
 [ "$RC" -eq 0 ] || {
@@ -298,12 +300,12 @@ case "$RUNTIME" in
       && SANDBOX="rootless container, OS user hive-${ACTOR//./-}; only record, model gateway and sshd reachable on the host" \
       || SANDBOX="rootless container, operator user" ;;
 esac
-CUR=$(HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY hive actors 2>/dev/null \
+CUR=$(HIVE_URL=$HIVE_URL HIVE_ID=$HIVE_ID HIVE_KEY_FILE=$KEY hive actors 2>/dev/null \
   | jq -c --arg a "$ACTOR" '.[] | select(.id == $a) | .declaration' 2>/dev/null || true)
 if [ -n "$CUR" ] && [ "$(jq -r '.harness + "|" + .model_route + "|" + .sandbox' <<<"$CUR")" != "$HARNESS|$ROUTE_DESC|$SANDBOX" ]; then
   NEWDECL=$(jq -c --arg a "$ACTOR" --arg h "$HARNESS" --arg m "$ROUTE_DESC" --arg s "$SANDBOX" \
     '{actor_id: $a, declaration: (. + {harness: $h, model_route: $m, sandbox: $s})}' <<<"$CUR")
-  HIVE_URL=http://127.0.0.1:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY HIVE_VIA=launcher:$ACTOR \
+  HIVE_URL=$HIVE_URL HIVE_ID=$HIVE_ID HIVE_KEY_FILE=$KEY HIVE_VIA=launcher:$ACTOR \
     hive emit actor.declared --data "$NEWDECL" >/dev/null 2>&1 \
     && echo "declared: $ACTOR now $HARNESS, $ROUTE_DESC" \
     || echo "warning: couldn't re-declare $ACTOR as $HARNESS, $ROUTE_DESC" >&2
@@ -313,7 +315,7 @@ fi
 # pool's per-attempt limit stops it running over (the router only decides whether it fits).
 AB=$(printf '%s' "$DEC" | hr attempt-budget "$TABLE" -)
 if [ -n "$AB" ]; then
-  GWMASTER=$(sed -n 's/^HIVE_GATEWAY_KEY=//p' "$HOME/.config/hive/gateway.env")
+  GWMASTER=$(sed -n 's/^HIVE_GATEWAY_KEY=//p' "$HIVE_CONFIG_DIR/gateway.env")
   curl -s -m 20 -X POST http://127.0.0.1:4000/tag/new -H "Authorization: Bearer $GWMASTER" \
     -H 'Content-Type: application/json' -d "$AB" | jq -e '.tag // .message' >/dev/null 2>&1 \
     && echo "budget: $(jq -r '.name + " $" + (.max_budget|tostring)' <<<"$AB")" \
@@ -358,9 +360,9 @@ KICK
 fi
 
 cat > "$DIR/hive.env" <<EOF
-export HIVE_URL=http://$H:8470 HIVE_ID=1-hive HIVE_KEY_FILE=$KEY HIVE_VIA=$HARNESS:$ACTOR
+export HIVE_URL=http://$H:$HP HIVE_ID=$HIVE_ID HIVE_KEY_FILE=$KEY HIVE_VIA=$HARNESS:$ACTOR
 export HIVEPIN_REPOSITORY_REGISTRY_PATH=$DIR/registry.json
-export PATH=/home/omegahive/.local/bin:\$PATH
+export PATH=$LOCAL_BIN:\$PATH
 EOF
 
 # ---- launch ---------------------------------------------------------------------------
@@ -372,7 +374,7 @@ GW=(); GWENV=()
 if [ "$(jq -r '.via_gateway // false' <<<"$DEC")" = true ]; then
   GWURL=http://$H:4000
   # The worker key only calls models; the gateway's master key never reaches an agent.
-  HIVE_GATEWAY_KEY=$(sed -n 's/^HIVE_WORKER_KEY=//p' "$HOME/.config/hive/gateway.env")
+  HIVE_GATEWAY_KEY=$(sed -n 's/^HIVE_WORKER_KEY=//p' "$HIVE_CONFIG_DIR/gateway.env")
   MODEL=$(jq -r .route_id <<<"$DEC")
   case "$HARNESS" in
     # Spend in the gateway is tagged by task and attempt, as well as by pool, tier and route.
@@ -385,14 +387,14 @@ if [ "$(jq -r '.via_gateway // false' <<<"$DEC")" = true ]; then
                -c 'model_provider="hivegw"') ;;
   esac
 fi
-ALLOWLIST=/home/omegahive/repos/1-hive/deploy/review-allowlist.json
+ALLOWLIST=$HIVE_DEPLOY_DIR/review-allowlist.json
 if [ "$RUNTIME" = host ]; then
   RUN=(env "${GWENV[@]}" "${CAP[@]}")
-  WSDIR=(--add-dir /home/omegahive/repos/hive-workspace.git)   # codex: the workspace remote
+  WSDIR=(--add-dir "$HIVE_WORKSPACE_REPO")   # codex: the workspace remote
 else
-  A=$HOME/.config/hive/agents
+  A=$HIVE_CONFIG_DIR/agents
   CNAME=hive-$(tr . - <<<"$ATTEMPT")
-  # The actor's own OS user (deploy/agent-users.sh; SPEC §6.6), when it exists: its rootless Podman
+  # The actor's own OS user (agent-users.sh; SPEC §6.6), when it exists: its rootless Podman
   # runs the container, so an escape lands as that unprivileged user. Otherwise the operator's.
   AU=hive-${ACTOR//./-}
   if id "$AU" >/dev/null 2>&1; then
@@ -428,10 +430,10 @@ else
   secret known-hosts "$A/known_hosts" "type=mount,target=/root/.ssh/known_hosts,mode=0444"
   secret allowlist "$ALLOWLIST" "type=mount,target=$ALLOWLIST,mode=0444"
   # Clones' remotes are the bare repositories' host paths; in the container, git reaches them
-  # over SSH as this actor (tools/git/hive-git-shell, whose pre-receive hook limits its pushes).
+  # over SSH as this actor (git/hive-git-shell, whose pre-receive hook limits its pushes).
   # The task folder's files belong to the operator's user, which the container doesn't map.
-  CENV=(-e GIT_CONFIG_COUNT=2 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@$H/home/omegahive/repos/.insteadOf"
-        -e GIT_CONFIG_VALUE_0=/home/omegahive/repos/ -e GIT_CONFIG_KEY_1=safe.directory -e 'GIT_CONFIG_VALUE_1=*'
+  CENV=(-e GIT_CONFIG_COUNT=2 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@$H$HIVE_REPOS_DIR/.insteadOf"
+        -e "GIT_CONFIG_VALUE_0=$HIVE_REPOS_DIR/" -e GIT_CONFIG_KEY_1=safe.directory -e 'GIT_CONFIG_VALUE_1=*'
         -e "GIT_AUTHOR_NAME=$ACTOR" -e "GIT_AUTHOR_EMAIL=$ACTOR@1-hive.invalid"
         -e "GIT_COMMITTER_NAME=$ACTOR" -e "GIT_COMMITTER_EMAIL=$ACTOR@1-hive.invalid")
   for kv in "${GWENV[@]}"; do CENV+=(-e "$kv"); done
@@ -440,7 +442,7 @@ else
     claude-code*)
       # A long-lived token (`claude setup-token`), not the operator's own login, whose refresh
       # would race the host's.
-      [ "${#GWENV[@]}" -eq 0 ] && secret claude-token "$HOME/.config/hive/claude-oauth-token" \
+      [ "${#GWENV[@]}" -eq 0 ] && secret claude-token "$HIVE_CONFIG_DIR/claude-oauth-token" \
         "type=env,target=CLAUDE_CODE_OAUTH_TOKEN" ;;
     codex)
       if [ "${P[0]}" = sudo ]; then
@@ -456,9 +458,9 @@ else
   CAPC=(); [ "$ROLE" = reviewer ] && CAPC=(--timeout 5400)
   RUN=("${P[@]}" run --rm -i --name "$CNAME" --init "${CAPC[@]}"   # -i: codex reads its prompt on stdin
        # No route to the host's loopback (its Postgres, everything else): only the record, model
-       # gateway and sshd, through tools/agent-ports.py's sockets, relayed by the image's hive-entry.
+       # gateway and sshd, through agent-ports.py's sockets, relayed by the image's hive-entry.
        # keep-groups: the agent user's group `hive` opens the sockets' directory.
-       --network slirp4netns -v "$HOME/work/1hive/.ports:/run/hive-ports:ro" --group-add keep-groups
+       --network slirp4netns -v "$ROOT/.ports:/run/hive-ports:ro" --group-add keep-groups
        --device /dev/fuse --device /dev/net/tun
        # Capabilities over the container's own namespaces only (rootless: nothing beyond its user
        # on the host). Nested Podman needs them for bridge networks (netavark enters the netns it

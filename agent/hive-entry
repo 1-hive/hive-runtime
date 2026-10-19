@@ -1,6 +1,6 @@
 #!/bin/sh
 # Entry point of an agent container: relay the host services an agent may use from the
-# container's loopback to the Unix sockets mounted at /run/hive-ports (tools/agent-ports.py),
+# container's loopback to the Unix sockets mounted at /run/hive-ports (agent-ports.py),
 # then run the agent. Without the mount, it just runs the command.
 P=/run/hive-ports
 if [ -d "$P" ]; then

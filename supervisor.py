@@ -28,7 +28,7 @@ Checkpoints don't count as failed attempts; a task may make MAX_CHECKPOINTS of t
 
 A restart's context is generated from the record (order, last reports, reason),
 committed to the workspace and pinned on task.restarted, then the worker is
-relaunched through tools/launch-task.sh with ROUTE_LAST_CLASS and the task's
+relaunched through launch-task.sh with ROUTE_LAST_CLASS and the task's
 first supplied ROUTE_FACTS, with its accepted checkpoints applied. Tasks with an open escalation are skipped until the chief
 of staff acts on the task after it (e.g. assigns a new review), or, when a reviewer ended
 without a verdict, until a review is recorded: only the chief of staff or the operator may
@@ -49,16 +49,16 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path.home() / "work" / "1hive"
+import hive_paths as hp
+
+ROOT = hp.WORK_DIR
 ROUTE = ROOT / ".route"
 HOME = ROOT / ".supervisor"
 WS = HOME / "workspace"
 LAUNCH = Path(__file__).resolve().parent / "launch-task.sh"
-REGISTRY_SRC = Path(__file__).resolve().parents[1] / "deploy" / "registry.json"
-ENV = {**os.environ, "HIVE_URL": "http://127.0.0.1:8470", "HIVE_ID": "1-hive",
-       "HIVE_KEY_FILE": str(Path.home() / ".config/hive/agents/supervisor.key"),
-       "HIVE_VIA": "supervisor", "HIVEPIN_REPOSITORY_REGISTRY_PATH": str(HOME / "registry.json"),
-       "PATH": f"{Path.home()}/.local/bin:{os.environ.get('PATH', '')}"}
+REGISTRY_SRC = hp.DEPLOY_DIR / "registry.json"
+ENV = {**hp.tool_env(hp.CONFIG_DIR / "agents" / "supervisor.key", "supervisor"),
+       "HIVEPIN_REPOSITORY_REGISTRY_PATH": str(HOME / "registry.json")}
 GRACE = 600          # seconds past the check-in interval before acting
 MAX_ATTEMPTS = 4     # attempt 1 + 3 restarts, then escalate
 MAX_NUDGES = 2
@@ -88,9 +88,9 @@ def git(*args: str) -> str:
 def setup() -> None:
     HOME.mkdir(parents=True, exist_ok=True)
     if not (WS / ".git").exists():
-        subprocess.run(["git", "clone", "-q", "/home/omegahive/repos/hive-workspace.git", str(WS)], check=True)
-        git("config", "user.name", "supervisor (1-hive)")
-        git("config", "user.email", "supervisor@1-hive.invalid")
+        subprocess.run(["git", "clone", "-q", str(hp.WORKSPACE_REPO), str(WS)], check=True)
+        git("config", "user.name", f"supervisor ({hp.HIVE_ID})")
+        git("config", "user.email", f"supervisor@{hp.HIVE_ID}.invalid")
     reg = json.loads(REGISTRY_SRC.read_text())
     reg["repositories"]["workspace"]["local_path"] = str(WS)
     (HOME / "registry.json").write_text(json.dumps(reg, indent=2))
@@ -337,7 +337,7 @@ def restart(t: dict, events: list[dict], reason: str, cls: str, dry: bool) -> No
     checkpoint_note = ("\n**This is a routing checkpoint, not a failure:** the previous attempt asked to be routed "
                        "again, so this attempt may run on another model. Your latest report is the handoff: "
                        "continue from it.\n") if cls == "checkpoint" else ""
-    project = t.get("project") or "mtg-player"
+    project = t.get("project") or (os.environ.get("HIVE_DEFAULT_REPO") or "mtg-player")
     rel = f"projects/{project}/runs/{task}/restart-{attempt + 1}.md"
     body = f"""# Restart context: {task}, attempt {attempt + 1}
 

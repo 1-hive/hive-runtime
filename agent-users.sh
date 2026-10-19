@@ -2,7 +2,7 @@
 # Create one OS user per agent actor (SPEC §6.6: no two agents share an OS user), so an agent
 # that escapes its container is an unprivileged user, not the operator. Run once, as root:
 #
-#   sudo deploy/agent-users.sh [actor...]     (default: the agent actors below)
+#   sudo agent-users.sh [actor...]     (default: the agent actors below)
 #
 # Each actor <a> (e.g. worker.claude.1) gets:
 # - user hive-<a with dots as dashes>, home /var/lib/1hive-agents/<user>, no login shell,
@@ -11,7 +11,7 @@
 # - nothing else: its keys reach its containers as Podman secrets, and it may enter only the
 #   task folders the launcher grants it (ACLs), so it can't read the operator's files.
 # The operator's user may run /usr/local/bin/hive-agent-podman as these users (sudoers), which
-# is how tools/launch-task.sh starts their containers.
+# is how launch-task.sh starts their containers.
 # Re-running is safe: existing users, ranges and files are kept.
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
@@ -44,15 +44,20 @@ for a in "${ACTORS[@]}"; do
   echo "$u ($a): uid $(id -u "$u"), subuid $(grep "^$u:" /etc/subuid | cut -d: -f2,3)"
 done
 
-# The operator's home and the task root: traversal only, so a granted task folder is reachable.
-for d in "/home/$OPERATOR" "/home/$OPERATOR/work" "/home/$OPERATOR/work/1hive"; do
+# The task root and every folder above it up to the operator's home: traversal only, so a granted
+# task folder is reachable. HIVE_WORK_DIR as in paths.sh (sudo keeps it only if passed: sudo HIVE_WORK_DIR=… …).
+WORK=${HIVE_WORK_DIR:-/home/$OPERATOR/work/1hive}
+d=$WORK
+while :; do
   setfacl -m g:hive:x "$d"
+  [ "$d" = "/home/$OPERATOR" ] || [ "$d" = / ] && break
+  d=$(dirname "$d")
 done
 
 # Podman as an agent user, with its own runtime directory (sudo doesn't set one).
 cat > /usr/local/bin/hive-agent-podman <<'EOF'
 #!/bin/sh
-# Run as an agent user (via sudo): its own rootless Podman. 1-hive deploy/agent-users.sh.
+# Run as an agent user (via sudo): its own rootless Podman. 1-hive agent-users.sh.
 XDG_RUNTIME_DIR=/run/user/$(id -u); export XDG_RUNTIME_DIR
 HOME=$(getent passwd "$(id -un)" | cut -d: -f6); export HOME
 cd "$HOME" || exit 1
@@ -61,7 +66,7 @@ EOF
 chmod 755 /usr/local/bin/hive-agent-podman
 
 SUDOERS=/etc/sudoers.d/1hive-agents
-{ echo "# 1-hive: the operator starts agent containers as the agents' own users (deploy/agent-users.sh)."
+{ echo "# 1-hive: the operator starts agent containers as the agents' own users (agent-users.sh)."
   echo "Defaults!/usr/local/bin/hive-agent-podman !requiretty"
   # Every agent user there is, not only this run's (a later run may add one actor).
   ALL=$(getent group hive | cut -d: -f4 | tr , '\n' | grep '^hive-' | sort -u | paste -sd,)

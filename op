@@ -14,7 +14,7 @@
 #   op add-key <public-key>     add a key to the operator (e.g. the Telegram bridge's)
 set -euo pipefail
 export HIVE_URL=${HIVE_URL:-http://127.0.0.1:8470} HIVE_ID=${HIVE_ID:-1-hive}
-export HIVE_KEY_FILE=${HIVE_KEY_FILE:-$HOME/.config/hive/operator.key} HIVE_VIA=${HIVE_VIA:-op}
+export HIVE_KEY_FILE=${HIVE_KEY_FILE:-${HIVE_CONFIG_DIR:-$HOME/.config/hive}/operator.key} HIVE_VIA=${HIVE_VIA:-op}
 HIVE=${HIVE:-$HOME/.local/bin/hive}
 
 json() { python3 -c 'import json,sys; print(json.dumps(dict(zip(sys.argv[1::2], sys.argv[2::2]))))' "$@"; }
@@ -31,7 +31,7 @@ need() { [ -n "${2:-}" ] || { echo "usage: op $1" >&2; exit 2; }; }
 cmd=${1:-inbox}; shift || true
 case "$cmd" in
   inbox)   "$HIVE" inbox --for operator ;;
-  cos)     exec /home/omegahive/repos/1-hive/tools/cos.sh attach ;;
+  cos)     exec "$(dirname "$(readlink -f "$0")")/cos.sh" attach ;;
   board)   "$HIVE" board ;;
   goal)    need "goal <id>" "${1:-}"; "$HIVE" goal "$1" ;;
   approve) need "approve <goal>" "${1:-}"; emit goal.approved "$1" ;;
