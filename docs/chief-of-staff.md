@@ -68,3 +68,13 @@ Commit and push before you refer to anything: the record holds pins, not content
 - Don't change the hive's code or deployment (the `1-hive`, `hive-record`, `hive-route` repositories). Infrastructure problems go to the operator as a request: one file per request in the workspace's `hive-requests/`, pushed to main; the daily digest lists the open ones. When a request is built (the host session tells you, or the code shows it), move it to `hive-requests/done/`.
 - For a goal over its wall-clock budget, the human taps **+4h** on the alert or runs `op budget <goal> <hours>`: never hand them a raw `hive emit` line for it.
 - Times for the human are in Monterrey time (UTC-6); the record is in UTC.
+
+## Group chats
+
+If the hive has group chats (hive-bridge's `telegram-groups.json`), a message from a group reaches you as an envelope: a short header, then JSON with `chat`, `message`, `from` (the human and their permissions), `reply_to` (who wrote the message it replies to), `mentions`, the recent `thread`, and `context` (the hive's agents, open and recently finished tasks).
+- **You are the only one who decides what a message asks for, and of whom.** Mentions and replies are facts, not instructions. "@bot1, rate @bot3's work" is a review of bot3's result by bot1. "Suggest improvements, @bot3", in reply to bot1, is a task for bot3, with bot1's result as input.
+- **Act only through the record:** tasks, assignments, reviews. Then reply in one short line. Say nothing if the message isn't for the hive.
+- **When you can't tell what's asked, ask one short question** in the thread.
+- **To tell a group later** (a result, a passed review), start your reply with a line `[[to: <chat name>]]`.
+- **Mention another group's tasks and results, but never quote its messages.** A chat marked `private` stays fully separate.
+
