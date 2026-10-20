@@ -13,7 +13,17 @@ For hives whose agents run continuously ([Iter](https://github.com/patham9/iter)
   - `result`;
   - `review`: with `extra` set to `passed`, `failed` or `needs_information`.
 
-Iter gives a channel or tool call 5 seconds. So the channel starts a small daemon on first use, and the tool only queues requests for it. The daemon reads the record, commits and pushes reports to the workspace, mints pins, and emits signed events with `hive` and `hive-pin`.
+Iter gives a channel or tool call 5 seconds. So the channel and the tool only queue files, and a small daemon does the rest: it reads the record, commits and pushes reports to the workspace, mints pins, and emits signed events with `hive` and `hive-pin`, citing what each one responds to (`cause`, record amendment A5: an acceptance cites the assignment, a result the review it answers, a review the result it judges). The daemon runs in one of two ways:
+
+- **Spawned:** the channel starts it on first use, inside the agent, from the agent's own `.hive/config.json`.
+- **Sidecar** (for agents in a container without git, or whose key must stay out of their reach): the agent's `.hive/config.json` says only `{"daemon": "sidecar"}`, and the daemon runs outside, as the agent's uid, started as `sidecar.py --root <the agent's folder> --config <config.json kept outside that folder>`. The two sides share only the queue files under `<root>/.runtime/hive`. The sidecar needs Python 3.11 or newer, git, `hive` and `hive-pin`. A systemd unit per agent:
+
+  ```ini
+  [Service]
+  User=hive-protomega2
+  ExecStart=/opt/hive/uv run --project /opt/hive/hive-record python /opt/hive/hive-runtime/adapters/iter/sidecar.py --root /opt/proto-hive-runtime/protomega2/iter-port-omega/repos --config /var/lib/hive-sidecars/protomega2/config.json
+  Restart=always
+  ```
 
 ## Configuration: `.hive/config.json` in the agent's folder
 
@@ -41,9 +51,9 @@ State lives in `.runtime/hive/` in the agent's folder: the queues, the last stat
 
 ## Test
 
-`tests/iter_adapter_e2e.py` runs a worker and a reviewer on a scratch record, the way `iter.py` calls channels and tools (a new process per call, from the agent's folder). The task goes through:
+`tests/iter_adapter_e2e.py` runs a worker and a reviewer on a scratch record, the way `iter.py` calls channels and tools (a new process per call, from the agent's folder). The worker runs in sidecar mode and the reviewer in spawned mode. The task goes through:
 1. assigned, accepted;
-2. progress, through the tool and through `send`;
+2. progress, through the tool and through `send`, and a nudge from the supervisor, delivered as a message;
 3. blocked, answered, unblocked;
 4. a result refused until pushed, then a result with code and base pins;
 5. a failed review, a new result, a passing review;

@@ -50,14 +50,23 @@ def invoke(agent: Path, path: Path, function: str, *args):
 
 
 class Agent:
-    def __init__(self, root: Path, actor: str, conf: dict):
-        self.root, self.actor = root, actor
+    def __init__(self, root: Path, actor: str, conf: dict, sidecar: bool = False):
+        """sidecar=True: the agent's folder holds only {"daemon": "sidecar"}; the real config lives outside
+        it and the daemon is sidecar.py, started here as a separate process (on vm2: a systemd unit)."""
+        self.root, self.actor, self.proc = root, actor, None
         (root / "channels").mkdir(parents=True)
         (root / "tools").mkdir()
         (root / ".hive").mkdir()
         shutil.copy(ADAPTER / "channels" / "hive.py", root / "channels" / "hive.py")
         shutil.copy(ADAPTER / "tools" / "hive_task.py", root / "tools" / "hive_task.py")
-        (root / ".hive" / "config.json").write_text(json.dumps(conf, indent=1))
+        if sidecar:
+            (root / ".hive" / "config.json").write_text(json.dumps({"daemon": "sidecar"}))
+            outside = root.parent / f"{actor}-sidecar-config.json"
+            outside.write_text(json.dumps(conf, indent=1))
+            self.proc = subprocess.Popen([sys.executable, str(ADAPTER / "sidecar.py"), "--root", str(root),
+                                          "--config", str(outside)], stdin=subprocess.DEVNULL)
+        else:
+            (root / ".hive" / "config.json").write_text(json.dumps(conf, indent=1))
         self.heard: list[str] = []
 
     def receive(self):
@@ -85,6 +94,9 @@ class Agent:
         raise SystemExit(f"{self.actor} never heard {needle!r}; heard: {self.heard[-3:]}")
 
     def stop(self):
+        if self.proc:
+            self.proc.terminate()
+            return
         try:
             os.kill(int((self.root / ".runtime" / "hive" / "pid").read_text()), 15)
         except Exception:
@@ -123,7 +135,7 @@ def main():
            "--secrets-file", str(secrets))
         pw = json.loads(secrets.read_text())
         url = {r: pg.url(f"it_{r}", pw[f"it_{r}"], "iterhive") for r in ("admin", "gateway")}
-        pub = {a: sh(*HIVE, "keygen", "--out", str(tmp / f"{a}.key")).strip() for a in ("op", "cos", "w1", "rv1")}
+        pub = {a: sh(*HIVE, "keygen", "--out", str(tmp / f"{a}.key")).strip() for a in ("op", "cos", "sup", "w1", "rv1")}
         (tmp / "policy.pin").write_bytes(dumps(fx.policy_pin()))
         sh(*HIVE, "init", "--admin-url", url["admin"], "--prefix", "it", "--hive", "iterhive", "--profile", "1-hive",
            "--policy", str(tmp / "policy.pin"), "--mode", "authoritative", "--registry", str(registry),
@@ -160,7 +172,7 @@ def main():
             sh("git", "-C", str(ws), "push", "-q", "origin", "HEAD:main", env=gitenv)
             return pin_file("workspace", ws, path)
 
-        for a, cls in (("cos", "chief_of_staff"), ("w1", "worker"), ("rv1", "reviewer")):
+        for a, cls in (("cos", "chief_of_staff"), ("sup", "supervisor"), ("w1", "worker"), ("rv1", "reviewer")):
             hive("op", "emit", "actor.registered", "--data", json.dumps(
                 {"actor_id": a, "class": cls, "role": cls, "keys": [pub[a]],
                  "declaration": {"harness": "iter", "model_route": "none", "sandbox": a}}))
@@ -186,7 +198,7 @@ def main():
                     "repos": repos, "poll_seconds": 2}
         code = tmp / "w1-code"
         sh("git", "clone", "-q", str(tmp / "code.git"), str(code), env=gitenv)
-        w1 = Agent(tmp / "iter-w1", "w1", conf("w1", {"code": str(code)}))
+        w1 = Agent(tmp / "iter-w1", "w1", conf("w1", {"code": str(code)}), sidecar=True)   # as on vm2
         rv1 = Agent(tmp / "iter-rv1", "rv1", conf("rv1", {}))
         agents += [w1, rv1]
         os.environ["HIVEPIN_CACHE_DIRECTORY"] = str(tmp / "pincache")
@@ -198,6 +210,9 @@ def main():
         w1.wait_for("OK: accepted t1")
         w1.tool("progress", "t1", "Plan: add the line, test, post.", "")
         w1.wait_for("OK: progress report on t1")
+        hive("sup", "emit", "task.nudged", "--task", "t1", "--data", json.dumps({"reason": "no check-in for 40 min"}))
+        w1.wait_for("Nudge on t1 from the supervisor")
+        assert "no check-in for 40 min" in w1.heard[-1], w1.heard[-1]
         w1.send("Started; nothing surprising.")
         w1.wait_for("OK: progress report on t1")
         w1.tool("block", "t1", "Which line should I add?\nOptions: a or b. Recommend a.", "decision")
@@ -253,7 +268,7 @@ def main():
         assert all(x in types for x in need), types
         refs = [json.loads(l) for l in hive("cos", "events").splitlines() if '"task.result_posted"' in l][-1]["refs"]
         assert sorted(r["rel"] for r in refs) == ["base", "code", "result"], refs
-        print("PASSED: assigned, accepted, progress (tool and send), blocked, answered, unblocked, result refused "
+        print("PASSED (worker in sidecar mode, reviewer in spawn mode): assigned, accepted, progress (tool and send), nudged, blocked, answered, unblocked, result refused "
               "until pushed, result with code+base pins, review failed, new result, review passed, closed")
     finally:
         for a in agents:

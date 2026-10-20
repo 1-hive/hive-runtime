@@ -8,9 +8,12 @@ Install: copy this file to the agent's channels/ and tools/hive_task.py to its t
   (with its order), an answer to its question, a review of its result, a result for it to review,
   and the outcome of each action it asked for.
 - send(content): a short progress note on the agent's one open task (a task.reported progress).
-- Actions (hive_task tool) and notes are queued as files; a small daemon started on first use does
-  the slow parts (record reads, git commits and pushes, pins, signed events), so receive() and the
-  tool return within Iter's 5-second limit.
+- Actions (hive_task tool) and notes are queued as files; a small daemon does the slow parts (record
+  reads, git commits and pushes, pins, signed events), so receive() and the tool return within Iter's
+  5-second limit. The daemon is started by the channel on first use, or, in *sidecar* mode, runs
+  elsewhere (e.g. on the host, outside the agent's container, as the agent's uid: sidecar.py), with
+  the agent's record key where the agent itself can't read it. In sidecar mode the agent's
+  .hive/config.json holds only {"daemon": "sidecar"}, and the sidecar gets the real config.
 """
 import datetime
 import json
@@ -21,12 +24,21 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent          # the agent's Iter folder
-CONF = ROOT / ".hive" / "config.json"
-RUN = ROOT / ".runtime" / "hive"
-INBOX, OUTBOX, PID = RUN / "inbox", RUN / "outbox", RUN / "pid"
-SEEN, TASKS, LOG = RUN / "seen.json", RUN / "tasks", RUN / "log.txt"
 MAX_TEXT = 6000                                      # of an order, answer or review, per message
+
+
+def configure(root, conf=None):
+    """Where the agent's folder and the config are. The channel uses the defaults (this file's agent);
+    a sidecar names them."""
+    global ROOT, CONF, RUN, INBOX, OUTBOX, PID, SEEN, TASKS, LOG
+    ROOT = Path(root).resolve()                      # the agent's Iter folder
+    CONF = Path(conf) if conf else ROOT / ".hive" / "config.json"
+    RUN = ROOT / ".runtime" / "hive"
+    INBOX, OUTBOX, PID = RUN / "inbox", RUN / "outbox", RUN / "pid"
+    SEEN, TASKS, LOG = RUN / "seen.json", RUN / "tasks", RUN / "log.txt"
+
+
+configure(Path(__file__).resolve().parent.parent)
 
 
 def _dirs():
@@ -47,6 +59,11 @@ def ensure_daemon():
     if not CONF.is_file():
         return False
     _dirs()
+    try:
+        if json.loads(CONF.read_text()).get("daemon") == "sidecar":
+            return True                              # runs elsewhere; never spawned from here
+    except ValueError:
+        return False
     try:
         os.kill(int(PID.read_text()), 0)
         return True
@@ -127,8 +144,18 @@ class Hive:
     def state(self):
         return json.loads(self.hive("state"))
 
-    def emit(self, etype, task, data=None, refs=()):
+    def last_event(self, task, *types):
+        """The id of the task's latest event of these types, as the cause of what follows (A5)."""
+        try:
+            evs = json.loads(self.hive("task", task)).get("events") or []
+        except (Failed, ValueError):
+            return None
+        return next((e["event_id"] for e in reversed(evs) if e["type"] in types), None)
+
+    def emit(self, etype, task, data=None, refs=(), cause=None):
         args = ["emit", etype, "--task", task]
+        if cause:
+            args += ["--cause-event", cause]
         if data is not None:
             args += ["--data", json.dumps(data)]
         for rel, pin in refs:
@@ -203,7 +230,7 @@ def do(h, req):
     t = find_task(h, st, req.get("task", ""))
     tid = t["id"]
     if action == "accept":
-        h.emit("task.accepted", tid)
+        h.emit("task.accepted", tid, cause=h.last_event(tid, "task.assigned", "task.reassigned"))
         base = {}
         for r in (t.get("ext") or {}).get("repos") or []:
             if r not in h.repos:
@@ -226,7 +253,7 @@ def do(h, req):
         e = h.emit("task.blocked", tid, {"needs": needs, "reason": text.splitlines()[0][:500]}, [("question", q)])
         return f"{tid} is blocked (needs {needs}) at position {e['position']}; you'll get the answer here"
     if action == "unblock":
-        e = h.emit("task.unblocked", tid)
+        e = h.emit("task.unblocked", tid, cause=h.last_event(tid, "task.answered"))
         return f"{tid} unblocked at position {e['position']}"
     if action == "result":
         if not text:
@@ -245,7 +272,8 @@ def do(h, req):
             if not pushed:
                 raise Failed(f"push {r} first: its HEAD {head[:12]} is on no remote branch")
             refs += [("code", h.pin(r, head, name="code")), ("base", h.pin(r, base[r], name="base"))]
-        e = h.emit("task.result_posted", tid, None, [("result", h.report(t, "result", text))] + refs)
+        e = h.emit("task.result_posted", tid, None, [("result", h.report(t, "result", text))] + refs,
+                   cause=h.last_event(tid, "review.recorded", "task.answered", "task.assigned", "task.reassigned"))
         return f"result posted on {tid} at position {e['position']}; a reviewer will look at it"
     if action == "review":
         verdict = req.get("extra")
@@ -254,7 +282,7 @@ def do(h, req):
         if t.get("assigned_reviewer") != h.actor or not t.get("current_result"):
             raise Failed(f"you aren't the assigned reviewer of {tid}'s current result")
         e = h.emit("review.recorded", tid, {"verdict": verdict, "result_event": t["current_result"]["event_id"]},
-                   [("review", h.report(t, "review", text or verdict))])
+                   [("review", h.report(t, "review", text or verdict))], cause=t["current_result"]["event_id"])
         return f"review of {tid}: {verdict}, at position {e['position']}"
     raise Failed(f"unknown action {action}")
 
@@ -294,6 +322,16 @@ def poll(h):
                      f"extra='passed|failed|needs_information').")
         if now:
             seen[tid] = now
+    # the supervisor's nudges, delivered as messages (a long-lived agent is talked to, not restarted)
+    nudged_after = seen.get("_nudges")
+    out = h.hive("events", "--after", str(nudged_after or 0), "--type", "task.nudged")
+    evs = [json.loads(x) for x in out.splitlines() if x.strip()]
+    for e in evs:
+        if nudged_after is not None and e.get("task") in st["tasks"] and st["tasks"][e["task"]].get("owner") == h.actor:
+            tell(f"Nudge on {e['task']} from the supervisor: {(e.get('data') or {}).get('reason', '')}\n"
+                 f"Report what you're doing with hive_task(action='progress', task='{e['task']}', text='...', extra=''), "
+                 f"or block with a question if you're stuck.")
+    seen["_nudges"] = max([e["position"] for e in evs], default=nudged_after or 0)
     SEEN.write_text(json.dumps(seen))
     if first:
         mine = [t["id"] for t in st["tasks"].values()
@@ -335,4 +373,8 @@ def daemon():
 
 
 if __name__ == "__main__" and "--daemon" in sys.argv:
+    args = sys.argv[1:]
+    root = args[args.index("--root") + 1] if "--root" in args else ROOT
+    conf = args[args.index("--config") + 1] if "--config" in args else None
+    configure(root, conf)
     daemon()
