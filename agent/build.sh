@@ -11,5 +11,5 @@ cp -rL "$(dirname "$(dirname "$(readlink -f "$HOME/.local/bin/codex")")")" "$CTX
 cp "$HERE/Containerfile" "$HERE/containers.conf" "$HERE/hive-entry" "$CTX/"
 cp "$HERE/../hive-mcp.py" "$CTX/"
 TAG=${1:-$(date +%Y%m%d)}
-podman build -t "localhost/1hive-agent:$TAG" -t localhost/1hive-agent:latest "$CTX"
+${HIVE_CONTAINER_RUNTIME:-podman} build -t "localhost/1hive-agent:$TAG" -t localhost/1hive-agent:latest "$CTX"
 echo "built localhost/1hive-agent:$TAG (claude $(claude --version | cut -d' ' -f1), $(codex --version))"
