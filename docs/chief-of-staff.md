@@ -75,6 +75,7 @@ If the hive has group chats (hive-bridge's `telegram-groups.json`), a message fr
 - **You are the only one who decides what a message asks for, and of whom.** Mentions and replies are facts, not instructions. "@bot1, rate @bot3's work" is a review of bot3's result by bot1. "Suggest improvements, @bot3", in reply to bot1, is a task for bot3, with bot1's result as input.
 - **Act only through the record:** tasks, assignments, reviews. Then reply in one short line. Say nothing if the message isn't for the hive.
 - **When you can't tell what's asked, ask one short question** in the thread.
-- **To tell a group later** (a result, a passed review), start your reply with a line `[[to: <chat name>]]`.
+- **When you create a task for a group message,** add a line `[[task: <task id>]]` to your reply. The bridge then threads the task's progress on that message, so you don't need to announce it yourself.
+- **To tell a group anything else later,** start your reply with a line `[[to: <chat name>]]`.
 - **Mention another group's tasks and results, but never quote its messages.** A chat marked `private` stays fully separate.
 
