@@ -41,13 +41,14 @@ import time
 from pathlib import Path
 
 import hive_paths as hp
-from supervisor import alive, failure_class, latest_attempt
+from supervisor import alive, failure_class, latest_attempt, long_lived
 
 ROOT = hp.WORK_DIR
 HOME = ROOT / ".dispatcher"
 LAUNCH = Path(__file__).resolve().parent / "launch-task.sh"
 ENV = hp.tool_env(hp.CONFIG_DIR / "agents" / "dispatcher.key", "dispatcher")
-REVIEWERS = ("reviewer.codex.1", "reviewer.claude.1")   # in order of preference
+REVIEWERS = tuple(r.strip() for r in os.environ.get("HIVE_REVIEWERS", "").split(",") if r.strip()) \
+    or ("reviewer.codex.1", "reviewer.claude.1")   # in order of preference (HIVE_REVIEWERS overrides)
 RETRY = 600
 ROUTE = ROOT / ".route"
 
@@ -106,6 +107,8 @@ def relaunch_of(t: dict, events: list[dict]) -> tuple[str, str | None] | None:
     if not asg:
         return None
     rv = asg[-1]["data"]["reviewer"]
+    if long_lived(rv):      # it runs elsewhere (a reviewer runner, an agent's sidecar): assigning is all we do
+        return None
     at = dt.datetime.fromisoformat(asg[-1]["recorded_at"].replace("Z", "+00:00")).timestamp()
     pids = ROUTE.joinpath(f"{t['id']}-review").glob("review.*.pid")
     if not any(p.stat().st_mtime >= at for p in pids):
@@ -224,6 +227,15 @@ def dispatch(t: dict, state: dict, dry: bool, retry_at: dict, events: list[dict]
     extra = " ".join(r for r in repos if r != CODE_HOME)
     again = relaunch_of(t, events)   # already assigned, not running: relaunch, don't re-assign
     for reviewer in ([again[0]] if again else [r for r in REVIEWERS if r != author]):
+        if long_lived(reviewer) and not again:
+            # assign-only: a reviewer runner or the agent's own sidecar takes it from the record, with its own kickoff
+            if dry:
+                log(f"DRY assign {reviewer} to {task} ({res['event_id']}), no launch")
+                return
+            ev = json.loads(hive("emit", "review.assigned", "--task", task, "--cause-event", res["event_id"], "--data",
+                                 json.dumps({"reviewer": reviewer, "result_event": res["event_id"]})))
+            log(f"review.assigned {task} -> {reviewer} at position {ev['position']} (runs elsewhere)")
+            return
         path = kickoff(t, reviewer, state)
         if dry:
             log(f"DRY {'relaunch' if again else 'assign'} {reviewer} to {task} ({res['event_id']}), kickoff {path}")
@@ -231,7 +243,7 @@ def dispatch(t: dict, state: dict, dry: bool, retry_at: dict, events: list[dict]
         if again:
             log(f"relaunch {task} -> {reviewer} ({'hit a usage limit' if again[1] else 'assigned, never started'})")
         else:
-            ev = json.loads(hive("emit", "review.assigned", "--task", task, "--data",
+            ev = json.loads(hive("emit", "review.assigned", "--task", task, "--cause-event", res["event_id"], "--data",
                                  json.dumps({"reviewer": reviewer, "result_event": res["event_id"]})))
             log(f"review.assigned {task} -> {reviewer} at position {ev['position']}")
         r = subprocess.run([str(LAUNCH), "reviewer", task, reviewer, str(path)], capture_output=True,
@@ -259,6 +271,8 @@ def handle(t: dict, state: dict, dry: bool, retry_at: dict) -> None:
     """Launch what one task needs: its worker, a worker to read an answer, or its reviewer."""
     if (t.get("ext") or {}).get("escalation"):
         return
+    if long_lived(t.get("owner")) and t["status"] != "in_review":
+        return      # its sidecar delivers assignments and answers; nothing to launch
     if t["status"] == "assigned" and t.get("owner", "").startswith("worker.") \
             and not any(ROUTE.joinpath(t["id"]).glob("worker.*.pid")):
         launch_worker(t, state, WORKER_KICKOFF.format(**fields(t, state), repos_line=repos_line(t)),

@@ -30,6 +30,8 @@ Every tool reads the same environment variables (`paths.sh` for the shell tools,
 | `HIVE_WORKSPACE_REPO` | `$HIVE_REPOS_DIR/hive-workspace.git` | The workspace remote (orders, reports, questions) |
 | `HIVE_ROUTE_DIR` | `$HIVE_REPOS_DIR/hive-route` | The router's checkout |
 | `HIVE_DEFAULT_REPO` | `mtg-player` | The code repository every task folder holds; others come as `EXTRA_REPOS` |
+| `HIVE_LONG_LIVED_ACTORS` | (none) | Comma-separated actor-id patterns (`worker.*,reviewer.astra`) that are never launched or restarted: their sidecar or runner takes work from the record. The dispatcher only assigns reviews to them; the supervisor nudges, then escalates to the chief of staff, and escalates a result whose review waits over `HIVE_REVIEW_WAIT_SECONDS` (7200) |
+| `HIVE_REVIEWERS` | `reviewer.codex.1,reviewer.claude.1` | The reviewers the dispatcher assigns, in order of preference |
 
 Two need care, because they're read outside the operator's session:
 - `git/hive-git-shell` runs as sshd's forced command, with a clean environment. A hive whose repositories aren't in `~/repos` writes `HIVE_REPOS_DIR=…` into the forced command.

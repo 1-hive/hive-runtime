@@ -63,6 +63,11 @@ GRACE = 600          # seconds past the check-in interval before acting
 MAX_ATTEMPTS = 4     # attempt 1 + 3 restarts, then escalate
 MAX_NUDGES = 2
 MAX_CHECKPOINTS = 3  # routing checkpoints per task
+# Long-lived agents (HIVE_LONG_LIVED_ACTORS: comma-separated actor-id patterns, e.g. "worker.*,reviewer.astra"):
+# no process to watch, nothing to relaunch. The ladder is nudge, nudge, escalate to the chief of staff, who
+# reassigns. A result they must review that waits longer than HIVE_REVIEW_WAIT_SECONDS is escalated too.
+LONG_LIVED = [p.strip() for p in os.environ.get("HIVE_LONG_LIVED_ACTORS", "").split(",") if p.strip()]
+REVIEW_WAIT_S = int(os.environ.get("HIVE_REVIEW_WAIT_SECONDS", 7200))
 CP_FILE = "route-checkpoint.json"
 # What a checkpoint may change: facts the worker learns from the work. verification,
 # consequence and leverage describe the task's stakes and stay as the chief of staff set them.
@@ -94,6 +99,48 @@ def setup() -> None:
     reg = json.loads(REGISTRY_SRC.read_text())
     reg["repositories"]["workspace"]["local_path"] = str(WS)
     (HOME / "registry.json").write_text(json.dumps(reg, indent=2))
+
+
+def long_lived(actor: str | None) -> bool:
+    import fnmatch
+    return bool(actor) and any(fnmatch.fnmatchcase(actor, p) for p in LONG_LIVED)
+
+
+def supervise_long_lived(t: dict, now: float, dry: bool) -> None:
+    """The ladder for an agent that is talked to, never restarted: a late acceptance or a silence past the
+    check-in gets MAX_NUDGES nudges, then an escalation to the chief of staff (`stuck`); a result whose
+    long-lived reviewer gives no verdict within REVIEW_WAIT_S is escalated too (`other`)."""
+    task, ext = t["id"], t.get("ext") or {}
+    lease = ext.get("lease") or {}
+    if t["status"] == "in_review":
+        rv = t.get("assigned_reviewer")
+        if not rv or t.get("latest_review"):
+            return
+        hist = json.loads(hive("task", task))["events"]
+        assigned = max((ts(e["recorded_at"]) for e in hist if e["type"] == "review.assigned"), default=None)
+        if assigned and now - assigned > REVIEW_WAIT_S:
+            emit("task.escalated", task, {"to": "chief_of_staff", "code": "other",
+                                          "reason": f"no verdict from {rv} after {int((now - assigned) / 60)} min"}, dry=dry)
+        return
+    if t["status"] == "assigned":
+        limit, since = lease.get("accept_within_seconds"), ts(t.get("assigned_at"))
+        what = "not accepted"
+    else:
+        limit, since = lease.get("checkin_every_seconds"), ts((t.get("last_activity") or {}).get("at")) or ts(t.get("assigned_at"))
+        what = "no activity"
+    if not limit or not since or now - since <= limit + GRACE:
+        return
+    nudges = ext.get("nudges_since_activity", 0)
+    if nudges < MAX_NUDGES:
+        hist = json.loads(hive("task", task))["events"]
+        last_nudge = max((ts(e["recorded_at"]) for e in hist if e["type"] == "task.nudged"), default=0)
+        if now - last_nudge > limit:
+            emit("task.nudged", task, {"reason": f"{what} for {int((now - since) / 60)} min "
+                                                 f"(limit {limit // 60} min); report or ask"}, dry=dry)
+        return
+    emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck",
+                                  "reason": f"{what} for {int((now - since) / 60)} min after {nudges} nudges; "
+                                            f"{t.get('owner')} may need reassigning"}, dry=dry)
 
 
 def ts(s: str | None) -> float | None:
@@ -432,6 +479,9 @@ def supervise(t: dict, now: float, dry: bool) -> None:
     if esc and not handled(t["id"], esc):
         return
     task = t["id"]
+    if long_lived(t.get("assigned_reviewer") if t["status"] == "in_review" else t.get("owner")):
+        supervise_long_lived(t, now, dry)
+        return
     if t["status"] == "in_review":
         rv = t.get("assigned_reviewer")
         att = latest_attempt(task, "review")
