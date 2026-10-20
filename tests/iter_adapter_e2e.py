@@ -268,7 +268,60 @@ def main():
         assert all(x in types for x in need), types
         refs = [json.loads(l) for l in hive("cos", "events").splitlines() if '"task.result_posted"' in l][-1]["refs"]
         assert sorted(r["rel"] for r in refs) == ["base", "code", "result"], refs
-        print("PASSED (worker in sidecar mode, reviewer in spawn mode): assigned, accepted, progress (tool and send), nudged, blocked, answered, unblocked, result refused "
+
+        print("hive-task (OpenClaw) + reviewer runner:")
+        # t2: w1 works it through the synchronous hive-task CLI (an agent with a shell, no daemon needed);
+        # rv1 reviews it through the reviewer runner, with a stand-in review command.
+        opin2 = commit_ws("projects/p1/orders/t2.md", "# Order t2\n\nAdd a second line.\n", "order 2")
+        hive("cos", "emit", "task.created", "--task", "t2", "--goal", "g1", "--ref", f"order={opin2}",
+             "--data", json.dumps({"title": "Second line", "project": "p1", "ext": {"kind": "work", "repos": ["code"]}}))
+        hive("cos", "emit", "task.assigned", "--task", "t2", "--data", json.dumps(
+            {"to": "w1", "ext": {"lease": {"accept_within_seconds": 600, "checkin_every_seconds": 900}}}))
+        henv = {**os.environ, "HIVE_TASK_CONFIG": str(tmp / "w1-sidecar-config.json")}
+        def ht(*a):
+            r = subprocess.run([sys.executable, str(ADAPTER.parent / "openclaw" / "hive-task"), *a], env=henv,
+                               capture_output=True, text=True, timeout=120)
+            return (r.stdout + r.stderr).strip()
+        for _ in range(20):
+            got = ht("inbox")
+            if "New task t2" in got:
+                break
+            time.sleep(2)
+        assert "New task t2" in got, got
+        print("  hive-task inbox:", got.splitlines()[0][:80])
+        assert ht("accept", "t2").startswith("OK: accepted t2"), ht("accept", "t2")
+        assert ht("progress", "t2", "Adding", "line", "b").startswith("OK: progress"), "progress"
+        (code / "README.md").write_text("code\na\nb\n")
+        sh("git", "-C", str(code), "commit", "-q", "-am", "add b", env=gitenv)
+        assert "push code first" in ht("result", "t2", "Added line b."), "unpushed result must be refused"
+        sh("git", "-C", str(code), "push", "-q", "origin", "HEAD:hive/t2", env=gitenv)
+        assert ht("result", "t2", "Added line b.").startswith("OK: result posted"), "result"
+        print("  hive-task: accept, progress, result refused until pushed, result posted")
+        fake = tmp / "fake-review.py"
+        fake.write_text("import sys; k = open(sys.argv[1]).read()\nprint('Reviewed:', k.splitlines()[0])\n"
+                        "print('base..code named:', 'base ' in k)\nprint('VERDICT: passed')\n")
+        rconf = {**conf("rv1-runner-" + "x", {}), "actor": "rv1", "key_file": str(tmp / "rv1.key"),
+                 "root": str(tmp / "rv1-runner"), "review_cmd": [sys.executable, str(fake), "{kickoff}"],
+                 "poll_seconds": 2}
+        (tmp / "rv1-runner").mkdir()
+        (tmp / "rv1-runner-config.json").write_text(json.dumps(rconf))
+        runner = subprocess.Popen([sys.executable, str(ADAPTER.parent / "reviewer" / "reviewer_runner.py"),
+                                   "--config", str(tmp / "rv1-runner-config.json")], stdin=subprocess.DEVNULL)
+        agents.append(type("P", (), {"stop": lambda self, p=runner: p.terminate()})())
+        cr2 = json.loads(hive("cos", "task", "t2"))["task"]["current_result"]
+        hive("cos", "emit", "review.assigned", "--task", "t2", "--data", json.dumps({"reviewer": "rv1", "result_event": cr2["event_id"]}))
+        for _ in range(45):
+            t2 = json.loads(hive("cos", "task", "t2"))["task"]
+            if (t2.get("latest_review") or {}).get("reviewer") == "rv1":
+                break
+            time.sleep(2)
+        assert t2["latest_review"]["verdict"] == "passed", t2.get("latest_review")
+        rev = [json.loads(l) for l in hive("cos", "events").splitlines() if '"review.recorded"' in l and '"t2"' in l][-1]
+        assert rev.get("cause") == {"event": cr2["event_id"]}, rev.get("cause")
+        print("  reviewer runner: kickoff written, stand-in command ran, verdict passed recorded, cause = the result")
+        hive("cos", "emit", "task.closed", "--task", "t2")
+        assert json.loads(hive("cos", "task", "t2"))["task"]["status"] == "done"
+        print("PASSED (t1: worker in sidecar mode, reviewer in spawn mode; t2: hive-task CLI and the reviewer runner): assigned, accepted, progress (tool and send), nudged, blocked, answered, unblocked, result refused "
               "until pushed, result with code+base pins, review failed, new result, review passed, closed")
     finally:
         for a in agents:

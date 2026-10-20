@@ -75,6 +75,18 @@ def ensure_daemon():
     return True
 
 
+def receive_now():
+    """The queued messages, without starting anything (hive-task inbox)."""
+    out = []
+    for path in sorted(INBOX.glob("[0-9]*")):
+        try:
+            out.append(path.read_text())
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    return "\n\n".join(out)
+
+
 def receive():
     if not ensure_daemon():
         return ""
@@ -105,7 +117,17 @@ def log(msg):
         f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}\n")
 
 
+DELIVER = None   # a command (list) run per message with {text} filled in, instead of the inbox file
+
+
 def tell(text):
+    if DELIVER:
+        cmd = [text if a == "{text}" else a for a in DELIVER]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        log(f"delivered ({r.returncode}): {text[:60]!r}")
+        if r.returncode:
+            _put(INBOX, text)                        # keep it for the next inbox read
+        return
     _put(INBOX, text)
 
 
@@ -340,6 +362,7 @@ def poll(h):
 
 
 def daemon():
+    global DELIVER
     _dirs()
     PID.write_text(str(os.getpid()))
     try:
@@ -348,6 +371,7 @@ def daemon():
         tell(f"hive channel can't start: {e}. Fix {CONF}.")
         log(f"can't start: {e}")
         return
+    DELIVER = h.c.get("deliver") or None             # e.g. ["openclaw", "agent", "exec", "--agent", "main", "--message", "{text}"]
     every = int(h.c.get("poll_seconds", 30))
     next_poll = 0.0
     while True:

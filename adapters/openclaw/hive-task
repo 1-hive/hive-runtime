@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""hive-task: an OpenClaw (or any shell-capable, long-lived) agent's hand on the hive record.
+
+    hive-task inbox                               what the record wants from you now
+    hive-task accept     <task>
+    hive-task progress   <task> <text>            a short report (also: checkpoint)
+    hive-task block      <task> <needs> <text>    a question; needs = decision|information|access|external
+    hive-task unblock    <task>
+    hive-task result     <task> <text>            the result report; push your code first
+    hive-task review     <task> <verdict> <text>  verdict = passed|failed|needs_information
+
+Config: $HIVE_TASK_CONFIG, else ~/.hive/config.json (the same file as the Iter adapter's, README.md).
+Synchronous: it does the record and git work itself and prints the outcome, so an agent with a shell
+needs no daemon. Pair it with a sidecar whose "deliver" command pushes new tasks into the agent, or
+run `hive-task inbox` from a heartbeat.
+"""
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CHANNEL = HERE.parent / "iter" / "channels" / "hive.py"
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        sys.exit(__doc__)
+    conf = Path(os.environ.get("HIVE_TASK_CONFIG") or Path.home() / ".hive" / "config.json")
+    if not conf.is_file():
+        sys.exit(f"no config at {conf} (set HIVE_TASK_CONFIG)")
+    spec = importlib.util.spec_from_file_location("hive_channel", CHANNEL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    c = json.loads(conf.read_text())
+    mod.configure(c.get("root") or conf.parent, conf)
+    mod._dirs()
+    h = mod.Hive(c)
+    action, rest = args[0], args[1:]
+    if action == "inbox":
+        mod.poll(h)
+        return print(mod.receive_now() or "(nothing new)")
+    req = {"action": action, "task": rest[0] if rest else "", "text": "", "extra": ""}
+    if action in ("progress", "checkpoint", "result"):
+        req["text"] = " ".join(rest[1:])
+    elif action == "block":
+        req["extra"], req["text"] = (rest[1] if len(rest) > 1 else ""), " ".join(rest[2:])
+    elif action == "review":
+        req["extra"], req["text"] = (rest[1] if len(rest) > 1 else ""), " ".join(rest[2:])
+    elif action not in ("accept", "unblock"):
+        sys.exit(f"unknown action {action}\n{__doc__}")
+    try:
+        print("OK:", mod.do(h, req))
+    except mod.Failed as e:
+        sys.exit(f"FAILED: {e}")
+
+
+if __name__ == "__main__":
+    main()

@@ -10,7 +10,7 @@ How agents do work on a hive record: launching workers, dispatching independent 
 - **Isolation:** `agent-ports.py` (the only host services containers reach), `git/` (per-actor git over SSH, with a pre-receive hook that keeps pinned commits reachable).
 - **The operator:** `op`, short commands that sign with the operator's key.
 - `docs/worker-contract.md`: what a worker must do on the record.
-- **Long-lived agents:** `adapters/iter/`, a `hive` channel and a `hive_task` tool for Iter agents, which take tasks from the record and sign with their own key (tested end to end on a scratch record: `tests/iter_adapter_e2e.py`).
+- **Long-lived agents:** `adapters/iter/`, a `hive` channel and a `hive_task` tool for Iter agents (spawned daemon, or a sidecar outside the agent); `adapters/openclaw/`, the `hive-task` command and a skill for agents with a shell; `adapters/reviewer/`, a runner for a reviewer behind a command (Astra). All tested end to end on a scratch record: `tests/iter_adapter_e2e.py`.
 
 Related: [hive-record](https://github.com/1-hive/hive-record) (R1 + R2), [hive-bridge](https://github.com/1-hive/hive-bridge) (where humans meet the hive), [hive-route](https://github.com/1-hive/hive-route) (R8), [hive-pin](https://github.com/1-hive/hive-pin) (R0).
 
