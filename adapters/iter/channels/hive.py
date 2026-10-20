@@ -232,6 +232,18 @@ class Hive:
         return self.pin(self.ws["repository"], self.git(clone, "rev-parse", "HEAD").strip(), str(rel), kind)
 
 
+def _mark(tid, key):
+    """Note a moment of the agent's work on a task (for the time split: record work versus the rest)."""
+    f = TASKS / f"{tid}.json"
+    try:
+        d = json.loads(f.read_text()) if f.is_file() else {}
+    except ValueError:
+        d = {}
+    d.setdefault("windows", []).append({key: time.time()})
+    d[key] = time.time()
+    f.write_text(json.dumps(d))
+
+
 def find_task(h, st, task_id, roles=("owner",)):
     if task_id:
         t = st["tasks"].get(task_id)
@@ -258,7 +270,7 @@ def do(h, req):
             if r not in h.repos:
                 raise Failed(f"accepted, but {r} has no clone in config.json; you can't post a result for it")
             base[r] = h.git(h.repos[r], "rev-parse", "HEAD").strip()
-        (TASKS / f"{tid}.json").write_text(json.dumps({"base": base}))
+        (TASKS / f"{tid}.json").write_text(json.dumps({"base": base, "accepted_at": time.time()}))
         return f"accepted {tid}" + (f"; base {', '.join(f'{r} {c[:12]}' for r, c in base.items())}" if base else "")
     if action in ("progress", "checkpoint"):
         if not text:
@@ -296,6 +308,7 @@ def do(h, req):
             refs += [("code", h.pin(r, head, name="code")), ("base", h.pin(r, base[r], name="base"))]
         e = h.emit("task.result_posted", tid, None, [("result", h.report(t, "result", text))] + refs,
                    cause=h.last_event(tid, "review.recorded", "task.answered", "task.assigned", "task.reassigned"))
+        _mark(tid, "result_at")
         return f"result posted on {tid} at position {e['position']}; a reviewer will look at it"
     if action == "review":
         verdict = req.get("extra")

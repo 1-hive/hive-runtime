@@ -6,11 +6,11 @@ How agents do work on a hive record: launching workers, dispatching independent 
 
 - **Launching work:** `launch-task.sh` (one attempt per assigned task, in the agent's own rootless container, routed by hive-route), `watch-task.sh`, `result-refs.sh`, `agent/` (the agent image), `agent-users.sh` (one OS user per agent).
 - **The loop:** `dispatcher.py` (launches workers and independent reviewers), `supervisor.py` (nudges, restarts, reassigns, escalates), `sweeper.py` (removes task folders the record no longer needs).
-- **The chief of staff:** `hive-mcp.py` (an MCP server over the record), `cos.sh` (its container: rootless Podman with keys as secrets, or, with `HIVE_CONTAINER_RUNTIME=docker`, plain Docker with the keys bind-mounted read-only; the Docker path isn't exercised on 1-hive), `docs/chief-of-staff.md` (its role).
+- **The chief of staff:** `hive-mcp.py` (an MCP server over the record), `docs/chief-of-staff.md` (its role on 1-hive) and `docs/chief-of-staff-proto-hive.md` (on the proto-hive: no goals, a work group, long-lived agents), `cos.sh` (its container: rootless Podman with keys as secrets, or, with `HIVE_CONTAINER_RUNTIME=docker`, plain Docker with the keys bind-mounted read-only; the Docker path isn't exercised on 1-hive).
 - **Isolation:** `agent-ports.py` (the only host services containers reach), `git/` (per-actor git over SSH, with a pre-receive hook that keeps pinned commits reachable).
 - **The operator:** `op`, short commands that sign with the operator's key.
 - `docs/worker-contract.md`: what a worker must do on the record.
-- **Long-lived agents:** `adapters/iter/`, a `hive` channel and a `hive_task` tool for Iter agents (spawned daemon, or a sidecar outside the agent); `adapters/openclaw/`, the `hive-task` command and a skill for agents with a shell; `adapters/reviewer/`, a runner for a reviewer behind a command (Astra). All tested end to end on a scratch record: `tests/iter_adapter_e2e.py`.
+- **Long-lived agents:** `adapters/iter/`, a `hive` channel and a `hive_task` tool for Iter agents (spawned daemon, or a sidecar outside the agent); `adapters/openclaw/`, the `hive-task` command and a skill for agents with a shell; `adapters/reviewer/`, a runner for a reviewer behind a command (Astra); `adapters/iter/time_split.py`, how much of an agent's model time went to record tasks. All tested end to end on a scratch record: `tests/iter_adapter_e2e.py`.
 
 Related: [hive-record](https://github.com/1-hive/hive-record) (R1 + R2), [hive-bridge](https://github.com/1-hive/hive-bridge) (where humans meet the hive), [hive-route](https://github.com/1-hive/hive-route) (R8), [hive-pin](https://github.com/1-hive/hive-pin) (R0).
 
