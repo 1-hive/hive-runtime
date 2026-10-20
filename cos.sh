@@ -31,7 +31,7 @@ setup() {
   [ "$RT" = docker ] || id "$U" >/dev/null 2>&1 || { echo "no OS user $U: sudo $RUNTIME_DIR/agent-users.sh cos" >&2; exit 2; }
   mkdir -p "$D/chat" "$D/.claude-state" "$D/followups"
   [ -d "$D/workspace/.git" ] || git clone -q "$HIVE_WORKSPACE_REPO" "$D/workspace"
-  cp "$RUNTIME_DIR/docs/chief-of-staff.md" "$D/CLAUDE.md"
+  cp "${COS_ROLE_DOC:-$RUNTIME_DIR/docs/chief-of-staff.md}" "$D/CLAUDE.md"   # the role: 1-hive's, or e.g. docs/chief-of-staff-proto-hive.md
   printf '%s\n' '{"mcpServers": {"hive": {"command": "/opt/hive-mcp/venv/bin/python", "args": ["/opt/hive-mcp/hive-mcp.py"]}}}' > "$D/mcp.json"
   jq '.repositories.workspace.local_path = "/cos/workspace"' "$HIVE_DEPLOY_DIR/registry.json" > "$D/registry.json"
   # Files cos created are its own (and already carry the default ACL): skip those.

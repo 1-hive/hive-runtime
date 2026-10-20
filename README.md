@@ -6,7 +6,7 @@ How agents do work on a hive record: launching workers, dispatching independent 
 
 - **Launching work:** `launch-task.sh` (one attempt per assigned task, in the agent's own rootless container, routed by hive-route), `watch-task.sh`, `result-refs.sh`, `agent/` (the agent image), `agent-users.sh` (one OS user per agent).
 - **The loop:** `dispatcher.py` (launches workers and independent reviewers), `supervisor.py` (nudges, restarts, reassigns, escalates), `sweeper.py` (removes task folders the record no longer needs).
-- **The chief of staff:** `hive-mcp.py` (an MCP server over the record), `docs/chief-of-staff.md` (its role on 1-hive) and `docs/chief-of-staff-proto-hive.md` (on the proto-hive: no goals, a work group, long-lived agents), `cos.sh` (its container: rootless Podman with keys as secrets, or, with `HIVE_CONTAINER_RUNTIME=docker`, plain Docker with the keys bind-mounted read-only; the Docker path isn't exercised on 1-hive).
+- **The chief of staff:** `hive-mcp.py` (an MCP server over the record), `docs/chief-of-staff.md` (its role on 1-hive) and `docs/chief-of-staff-proto-hive.md` (on the proto-hive: no goals, a work group, long-lived agents), `cos.sh` (its container; `COS_ROLE_DOC` picks the role doc: rootless Podman with keys as secrets, or, with `HIVE_CONTAINER_RUNTIME=docker`, plain Docker with the keys bind-mounted read-only; the Docker path isn't exercised on 1-hive).
 - **Isolation:** `agent-ports.py` (the only host services containers reach), `git/` (per-actor git over SSH, with a pre-receive hook that keeps pinned commits reachable).
 - **The operator:** `op`, short commands that sign with the operator's key.
 - `docs/worker-contract.md`: what a worker must do on the record.
