@@ -298,6 +298,29 @@ def main():
         sh("git", "-C", str(code), "push", "-q", "origin", "HEAD:hive/t2", env=gitenv)
         assert ht("result", "t2", "Added line b.").startswith("OK: result posted"), "result"
         print("  hive-task: accept, progress, result refused until pushed, result posted")
+        # t3: hive-task in sidecar mode: it only queues, w1's sidecar holds the key and does the work
+        (tmp / "w1-queue-config.json").write_text(json.dumps({"daemon": "sidecar", "root": str(w1.root), "wait_seconds": 60}))
+        qenv = {**os.environ, "HIVE_TASK_CONFIG": str(tmp / "w1-queue-config.json")}
+        def hq(*a):
+            r = subprocess.run([sys.executable, str(ADAPTER.parent / "openclaw" / "hive-task"), *a], env=qenv,
+                               capture_output=True, text=True, timeout=120)
+            return (r.stdout + r.stderr).strip()
+        opin3 = commit_ws("projects/p1/orders/t3.md", "# Order t3\n\nA third look.\n", "order 3")
+        hive("cos", "emit", "task.created", "--task", "t3", "--goal", "g1", "--ref", f"order={opin3}",
+             "--data", json.dumps({"title": "Third", "project": "p1", "ext": {"kind": "work"}}))
+        hive("cos", "emit", "task.assigned", "--task", "t3", "--data", json.dumps(
+            {"to": "w1", "ext": {"lease": {"accept_within_seconds": 600, "checkin_every_seconds": 900}}}))
+        for _ in range(20):
+            got = hq("inbox")
+            if "New task t3" in got:
+                break
+            time.sleep(2)
+        assert "New task t3" in got, got
+        out = hq("accept", "t3")
+        assert "OK: accepted t3" in out, out
+        assert "FAILED:" in hq("review", "t3", "passed", "x"), "a worker can't review"
+        assert json.loads(hive("cos", "task", "t3"))["task"]["status"] == "in_progress"
+        print("  hive-task in sidecar mode: inbox from the sidecar, accept queued and answered, a refusal reported")
         fake = tmp / "fake-review.py"
         fake.write_text("import sys; k = open(sys.argv[1]).read()\nprint('Reviewed:', k.splitlines()[0])\n"
                         "print('base..code named:', 'base ' in k)\nprint('VERDICT: passed')\n")

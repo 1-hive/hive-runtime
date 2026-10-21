@@ -25,6 +25,10 @@ Iter gives a channel or tool call 5 seconds. So the channel and the tool only qu
   Restart=always
   ```
 
+**OpenClaw agents (`adapters/openclaw/hive-task`)** use the same daemon. By default `hive-task` does the record and git work itself, so the agent holds its key. In sidecar mode its config is only `{"daemon": "sidecar", "root": "<a queue folder>"}`: each command queues the action and waits for the sidecar's answer, and `inbox` prints what the sidecar queued. The sidecar runs as above with `--root` at that folder, as the sidecar sees it (on vm2, the container's `/hive/<bot>/…` is the host's `/opt/proto-hive-runtime/<bot>/…`). Copy `hive-task` with this folder's `channels/hive.py` beside it as `../iter/channels/hive.py`. The agent's container then needs only Python, no git, `hive` or key.
+
+**Sidecar under another user than the agent** (pop-os, where agents share one user): the queue folder must be writable by both. Make it, and its `inbox`, `outbox`, `tasks` and `pins` subfolders, group-owned by a group both users are in, mode `2770`, and give the sidecar's unit `UMask=0007`. For the declaration, the sidecar user must be able to read the agent's folder, and git must trust it: `git config --global --add safe.directory <the folder>` as that user.
+
 ## Configuration: `.hive/config.json` in the agent's folder
 
 ```json

@@ -13,6 +13,11 @@ Config: $HIVE_TASK_CONFIG, else ~/.hive/config.json (the same file as the Iter a
 Synchronous: it does the record and git work itself and prints the outcome, so an agent with a shell
 needs no daemon. Pair it with a sidecar whose "deliver" command pushes new tasks into the agent, or
 run `hive-task inbox` from a heartbeat.
+
+Sidecar mode, for an agent that mustn't hold its record key or has no git (config:
+{"daemon": "sidecar", "root": "<the queue folder>"}): it only queues the action for a sidecar
+(sidecar.py --root <the same folder, as the sidecar sees it>) and prints the outcome when it arrives,
+with any other messages that came in meanwhile; `inbox` prints what the sidecar has queued.
 """
 import importlib.util
 import json
@@ -37,10 +42,12 @@ def main() -> None:
     c = json.loads(conf.read_text())
     mod.configure(c.get("root") or conf.parent, conf)
     mod._dirs()
-    h = mod.Hive(c)
+    queued = c.get("daemon") == "sidecar"
+    h = None if queued else mod.Hive(c)
     action, rest = args[0], args[1:]
     if action == "inbox":
-        mod.poll(h)
+        if not queued:
+            mod.poll(h)
         return print(mod.receive_now() or "(nothing new)")
     req = {"action": action, "task": rest[0] if rest else "", "text": "", "extra": ""}
     if action in ("progress", "checkpoint", "result"):
@@ -51,10 +58,33 @@ def main() -> None:
         req["extra"], req["text"] = (rest[1] if len(rest) > 1 else ""), " ".join(rest[2:])
     elif action not in ("accept", "unblock"):
         sys.exit(f"unknown action {action}\n{__doc__}")
+    if queued:
+        return queue(mod, req, int(c.get("wait_seconds", 300)))
     try:
         print("OK:", mod.do(h, req))
     except mod.Failed as e:
         sys.exit(f"FAILED: {e}")
+
+
+def queue(mod, req, wait):
+    """Hand the action to the sidecar and wait for its outcome (an "OK:" or "FAILED:" message)."""
+    import time
+    mod._put(mod.OUTBOX, req)
+    got, end = [], time.time() + wait
+    while time.time() < end:
+        new = mod.receive_now()
+        if new:
+            got.append(new)
+            if any(m.startswith(("OK:", "FAILED:")) for m in new.split("\n\n")):
+                break
+        time.sleep(1)
+    out = "\n\n".join(got)
+    if not out:
+        sys.exit(f"QUEUED: {req['action']} {req['task']}; no outcome from the sidecar in {wait} s (is it running?); "
+                 "check `hive-task inbox` later")
+    print(out)
+    if "FAILED:" in out and "OK:" not in out:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,15 +1,15 @@
 ---
 name: hive
-description: Take formal work from the hive record and report on it. Use when a task is assigned to you on the record, or when someone in chat asks for substantive work (then point them to the chief of staff).
+description: Take formal work from the hive record and report on it. Use when a task is assigned to you on the record, or when someone in chat asks you for substantive work (then ask the chief of staff to file it as a task for you).
 ---
 
 # The hive record
 
-You are one actor on the hive record, named in `~/.hive/config.json`, with your own key. Formal work reaches you only as **tasks** on the record, assigned by the chief of staff. Chat is for conversation: if someone asks you in chat for substantive work (code, a study, a document), say that work is assigned through the chief of staff and @-mention it, or ask it yourself.
+You are one actor on the hive record, named in `~/.hive/config.json`, with your own key. Formal work reaches you only as **tasks** on the record, assigned by the chief of staff. Chat is for conversation. If someone asks you in chat for substantive work (code, a study, a document, anything that needs a review), ask the chief of staff to file it as a task for you, replying to their message ("@cos please file this for me"), and do it under that task. Small things (a question, a lookup, a quick check) you just answer. Never edit `hive-task`, this skill or the hive's configuration.
 
 ## Commands
 
-All through `hive-task` (synchronous; each prints `OK:` or `FAILED:`):
+All through `hive-task` (each prints `OK:` or `FAILED:`; in sidecar mode it waits for the sidecar's answer, up to a few minutes):
 
 | When | Command |
 |---|---|
