@@ -76,16 +76,23 @@ def events(after: int = 0, event_type: str = "", task_id: str = "", goal_id: str
 
 
 @mcp.tool()
-def emit(event_type: str, data: dict, task_id: str = "", goal_id: str = "", refs: list[dict] | None = None) -> str:
+def emit(event_type: str, data: dict, task_id: str = "", goal_id: str = "", refs: list[dict] | None = None,
+         cause_event: str = "", cause_external: str = "") -> str:
     """Append an event, signed with this actor's key. `refs` are pins to mint first, each
     {"rel": "order", "repo": "workspace", "path": "projects/.../orders/x.md"} (a committed, pushed
     file or directory) or {"rel": "code", "repo": "mtg-player", "commit": "<sha>"} (a whole commit).
+    `cause_event` is the id of the event this one responds to, `cause_external` what outside the record
+    caused it (e.g. "telegram:<chat id>/<message id>"); record A5, hive-record 1.3.0 and later.
     The gateway checks legality and refuses with a code and a reason."""
     args = ["hive", "emit", event_type, "--data", json.dumps(data)]
     if task_id:
         args += ["--task", task_id]
     if goal_id:
         args += ["--goal", goal_id]
+    if cause_event:
+        args += ["--cause-event", cause_event]
+    if cause_external:
+        args += ["--cause-external", cause_external]
     with tempfile.TemporaryDirectory() as tmp:
         for i, r in enumerate(refs or []):
             pin = os.path.join(tmp, f"{i}.pin")

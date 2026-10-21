@@ -25,6 +25,7 @@ RT=${HIVE_CONTAINER_RUNTIME:-podman}
 if [ "$RT" = docker ]; then P=(docker); else P=(sudo -n -u "$U" /usr/local/bin/hive-agent-podman); fi
 D=$HIVE_WORK_DIR/cos A=$HIVE_CONFIG_DIR/agents
 MODEL=${COS_MODEL:-claude-opus-5-5}
+GIT_USER=${COS_GIT_USER:-$USER}   # the host user cos's git reaches over sshd (vm2: hive, whose shell is git-shell)
 CLAUDE="claude --model $MODEL --permission-mode auto --mcp-config /cos/mcp.json"
 
 setup() {
@@ -72,10 +73,10 @@ case "${1:-}" in
       -v "$D:/cos" -w /cos "${CREDS[@]}" \
       -e HIVE_URL=http://127.0.0.1:8470 -e "HIVE_ID=$HIVE_ID" -e HIVE_KEY_FILE=/keys/cos.key \
       -e HIVE_VIA=claude-code:cos -e HIVEPIN_REPOSITORY_REGISTRY_PATH=/cos/registry.json \
-      -e CLAUDE_CONFIG_DIR=/cos/.claude-state -e TZ=CST6 \
-      -e GIT_CONFIG_COUNT=3 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@127.0.0.1$HIVE_REPOS_DIR/.insteadOf" \
+      -e CLAUDE_CONFIG_DIR=/cos/.claude-state -e "TZ=${COS_TZ:-CST6}" \
+      -e GIT_CONFIG_COUNT=3 -e "GIT_CONFIG_KEY_0=url.ssh://$GIT_USER@127.0.0.1$HIVE_REPOS_DIR/.insteadOf" \
       -e "GIT_CONFIG_VALUE_0=$HIVE_REPOS_DIR/" -e GIT_CONFIG_KEY_1=safe.directory -e 'GIT_CONFIG_VALUE_1=*' \
-      -e "GIT_CONFIG_KEY_2=url.ssh://$USER@127.0.0.1$HIVE_REPOS_DIR/.insteadOf" \
+      -e "GIT_CONFIG_KEY_2=url.ssh://$GIT_USER@127.0.0.1$HIVE_REPOS_DIR/.insteadOf" \
       -e "GIT_CONFIG_VALUE_2=file://$HIVE_REPOS_DIR/" \
       -e GIT_AUTHOR_NAME=cos -e "GIT_AUTHOR_EMAIL=cos@$HIVE_ID.invalid" \
       -e GIT_COMMITTER_NAME=cos -e "GIT_COMMITTER_EMAIL=cos@$HIVE_ID.invalid" \

@@ -1,5 +1,6 @@
 # 1-hive agent image: one container per agent attempt (PLAN Phase E 1, SPEC §6.6).
-# Built by build.sh, which copies the host's current claude, codex and uv binaries in.
+# Built by build.sh, which copies the host's current claude, codex (if any) and uv binaries in; the
+# record's CLI at HIVERECORD_REV (build.sh passes HIVE_RECORD_TOOL_REF).
 #
 # The agent runs as root inside its rootless container: container root is the host user,
 # so files it writes in its mounted task folder belong to the host user, and nested
@@ -12,7 +13,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     && echo "root:1:65535" > /etc/subuid && echo "root:1:65535" > /etc/subgid
 COPY bin/ /usr/local/bin/
 COPY codex/ /opt/codex/
-RUN ln -s /opt/codex/bin/codex /usr/local/bin/codex && codex --version
+RUN if [ -x /opt/codex/bin/codex ]; then ln -s /opt/codex/bin/codex /usr/local/bin/codex && codex --version; fi
 ENV HOME=/root PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ARG HIVERECORD_REV=v1.1.0
 RUN uv tool install --with-executables-from hivepin "hiverecord @ git+https://github.com/1-hive/hive-record@${HIVERECORD_REV}" \
