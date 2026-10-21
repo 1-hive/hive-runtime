@@ -43,7 +43,10 @@ setup() {
     export HIVE_KEY_FILE=$A/cos.key HIVE_VIA=claude-code:cos HIVEPIN_REPOSITORY_REGISTRY_PATH=$D/registry.json \
       HIVEPIN_CACHE_DIRECTORY=$D/.pincache CLAUDE_CONFIG_DIR=$D/.claude-state TZ=${COS_TZ:-CST6} DISABLE_AUTOUPDATER=1 \
       GIT_AUTHOR_NAME=cos GIT_AUTHOR_EMAIL=cos@$HIVE_ID.invalid GIT_COMMITTER_NAME=cos GIT_COMMITTER_EMAIL=cos@$HIVE_ID.invalid
-    CLAUDE_CODE_OAUTH_TOKEN=$(cat "$A/claude-oauth-token"); export CLAUDE_CODE_OAUTH_TOKEN
+    # Claude's credential: a token file, and/or claude.env (KEY=value lines, e.g. ANTHROPIC_BASE_URL and
+    # ANTHROPIC_AUTH_TOKEN for a gateway that holds the account's login).
+    if [ -s "$A/claude-oauth-token" ]; then CLAUDE_CODE_OAUTH_TOKEN=$(cat "$A/claude-oauth-token"); export CLAUDE_CODE_OAUTH_TOKEN; fi
+    if [ -s "$A/claude.env" ]; then set -a; . "$A/claude.env"; set +a; fi
     return
   fi
   printf '%s\n' '{"mcpServers": {"hive": {"command": "/opt/hive-mcp/venv/bin/python", "args": ["/opt/hive-mcp/hive-mcp.py"]}}}' > "$D/mcp.json"
