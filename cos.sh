@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The chief of staff in its own container (1-hive PLAN, Phase E item 4; docs/chief-of-staff.md).
+# The chief of staff in its own container, or as its own Unix user (HIVE_CONTAINER_RUNTIME=none, below)
+# (1-hive PLAN, Phase E item 4; docs/chief-of-staff.md).
 #
 #   cos.sh run      the container, in the foreground: cos's Claude Code session in tmux
 #                   (the 1-hive-cos user service runs this)
@@ -19,20 +20,32 @@
 set -euo pipefail
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/paths.sh"
 U=hive-cos NAME=cos
-# HIVE_CONTAINER_RUNTIME=podman (1-hive: the agent user's rootless Podman, keys as secrets) or docker
-# (vm2: plain docker as this user, keys bind-mounted read-only, the Claude token from an env file).
+# HIVE_CONTAINER_RUNTIME=podman (1-hive: the agent user's rootless Podman, keys as secrets), docker
+# (plain docker as this user, keys bind-mounted read-only, the Claude token from an env file), or none:
+# no container, cos's session runs as the calling user (a Unix user of its own, e.g. `cos` on vm2),
+# with its keys in COS_KEY_DIR and its MCP server on COS_MCP_PYTHON (a Python with mcp>=2,<3).
 RT=${HIVE_CONTAINER_RUNTIME:-podman}
 if [ "$RT" = docker ]; then P=(docker); else P=(sudo -n -u "$U" /usr/local/bin/hive-agent-podman); fi
-D=$HIVE_WORK_DIR/cos A=$HIVE_CONFIG_DIR/agents
+D=${COS_DIR:-$HIVE_WORK_DIR/cos} A=${COS_KEY_DIR:-$HIVE_CONFIG_DIR/agents}
 MODEL=${COS_MODEL:-claude-opus-5-5}
 GIT_USER=${COS_GIT_USER:-$USER}   # the host user cos's git reaches over sshd (vm2: hive, whose shell is git-shell)
 CLAUDE="claude --model $MODEL --permission-mode auto --mcp-config /cos/mcp.json"
 
 setup() {
-  [ "$RT" = docker ] || id "$U" >/dev/null 2>&1 || { echo "no OS user $U: sudo $RUNTIME_DIR/agent-users.sh cos" >&2; exit 2; }
+  [ "$RT" != podman ] || id "$U" >/dev/null 2>&1 || { echo "no OS user $U: sudo $RUNTIME_DIR/agent-users.sh cos" >&2; exit 2; }
   mkdir -p "$D/chat" "$D/.claude-state" "$D/followups"
   [ -d "$D/workspace/.git" ] || git clone -q "$HIVE_WORKSPACE_REPO" "$D/workspace"
   cp "${COS_ROLE_DOC:-$RUNTIME_DIR/docs/chief-of-staff.md}" "$D/CLAUDE.md"   # the role: 1-hive's, or e.g. docs/chief-of-staff-proto-hive.md
+  if [ "$RT" = none ]; then
+    printf '{"mcpServers": {"hive": {"command": "%s", "args": ["%s"]}}}\n' "$COS_MCP_PYTHON" "$RUNTIME_DIR/hive-mcp.py" > "$D/mcp.json"
+    jq --arg ws "$D/workspace" '.repositories.workspace.local_path = $ws' "$HIVE_DEPLOY_DIR/registry.json" > "$D/registry.json"
+    CLAUDE="claude --model $MODEL --permission-mode auto --mcp-config $D/mcp.json"
+    export HIVE_KEY_FILE=$A/cos.key HIVE_VIA=claude-code:cos HIVEPIN_REPOSITORY_REGISTRY_PATH=$D/registry.json \
+      HIVEPIN_CACHE_DIRECTORY=$D/.pincache CLAUDE_CONFIG_DIR=$D/.claude-state TZ=${COS_TZ:-CST6} DISABLE_AUTOUPDATER=1 \
+      GIT_AUTHOR_NAME=cos GIT_AUTHOR_EMAIL=cos@$HIVE_ID.invalid GIT_COMMITTER_NAME=cos GIT_COMMITTER_EMAIL=cos@$HIVE_ID.invalid
+    CLAUDE_CODE_OAUTH_TOKEN=$(cat "$A/claude-oauth-token"); export CLAUDE_CODE_OAUTH_TOKEN
+    return
+  fi
   printf '%s\n' '{"mcpServers": {"hive": {"command": "/opt/hive-mcp/venv/bin/python", "args": ["/opt/hive-mcp/hive-mcp.py"]}}}' > "$D/mcp.json"
   jq '.repositories.workspace.local_path = "/cos/workspace"' "$HIVE_DEPLOY_DIR/registry.json" > "$D/registry.json"
   # Files cos created are its own (and already carry the default ACL): skip those.
@@ -67,6 +80,11 @@ setup() {
 case "${1:-}" in
   run)
     setup
+    if [ "$RT" = none ]; then
+      cd "$D"; tmux kill-session -t cos 2>/dev/null || true
+      tmux new-session -d -s cos -x 200 -y 50 -c "$D" "$CLAUDE --continue || $CLAUDE"
+      exec bash -c 'while tmux has-session -t cos 2>/dev/null; do sleep 15; done'
+    fi
     "${P[@]}" rm -f "$NAME" >/dev/null 2>&1 || true
     exec "${P[@]}" run --rm --name "$NAME" --init "${NET[@]}" \
       -v "$HIVE_WORK_DIR/.ports:/run/hive-ports:ro" \
@@ -84,22 +102,25 @@ case "${1:-}" in
       "tmux new-session -d -s cos -x 200 -y 50 -c /cos '$CLAUDE --continue || $CLAUDE'
        while tmux has-session -t cos 2>/dev/null; do sleep 15; done" ;;
   attach)
+    [ "$RT" = none ] && exec tmux attach -t cos
     exec "${P[@]}" exec -it "$NAME" tmux attach -t cos ;;
   chat)
     msg=$(cat)
     [ -n "$msg" ] || exit 0
+    if [ "$RT" = none ]; then setup >/dev/null; cd "$D/chat"; P=(env); fi
     # Continue the chat conversation; the first message starts it. A turn is stopped
     # inside the container after 15 minutes (killing the host side leaves it running),
     # and a stopped turn isn't retried as a new conversation.
     T="timeout -k 10 900"
     rc=0
-    printf '%s' "$msg" | "${P[@]}" exec -i -w /cos/chat "$NAME" $T $CLAUDE -p --continue 2>/dev/null || rc=$?
+    printf '%s' "$msg" | "${P[@]}" $([ "$RT" = none ] || echo exec -i -w /cos/chat "$NAME") $T $CLAUDE -p --continue 2>/dev/null || rc=$?
     if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
       echo "(stopped after 15 minutes without a reply)"
     elif [ "$rc" != 0 ]; then
-      printf '%s' "$msg" | "${P[@]}" exec -i -w /cos/chat "$NAME" $T $CLAUDE -p
+      printf '%s' "$msg" | "${P[@]}" $([ "$RT" = none ] || echo exec -i -w /cos/chat "$NAME") $T $CLAUDE -p
     fi ;;
   stop)
+    [ "$RT" = none ] && exec tmux kill-session -t cos
     "${P[@]}" stop -t 10 "$NAME" ;;
   *) sed -n '2,10p' "$0" >&2; exit 2 ;;
 esac
