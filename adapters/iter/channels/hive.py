@@ -374,6 +374,60 @@ def poll(h):
         tell(f"hive channel connected as {h.actor}." + (f" Open tasks: {', '.join(mine)}." if mine else ""))
 
 
+CODE_SUFFIXES = (".py", ".metta", ".sh", ".js", ".ts")   # untracked files that count as code
+
+
+def code_state(h):
+    """What the agent's code is now, in one line: its Iter folder's branch and commit, a hash of what's
+    uncommitted (tracked changes plus untracked code files), a hash of the hive channel and tool it holds,
+    and a hash of each file in config's "declare_files" (e.g. a memory system's flags)."""
+    import hashlib
+
+    def short(b):
+        return hashlib.sha256(b).hexdigest()[:8]
+
+    skip = [".runtime", ".hive", *h.c.get("declare_exclude", [])]
+    parts = []
+    try:
+        top = h.git(str(ROOT), "rev-parse", "--show-toplevel").strip()
+        branch = h.git(top, "rev-parse", "--abbrev-ref", "HEAD").strip()
+        head = h.git(top, "rev-parse", "--short=10", "HEAD").strip()
+        here = os.path.relpath(ROOT, top)
+        excl = [f":(exclude,glob){os.path.relpath(ROOT / s, top)}/**" for s in skip]
+        diff = h.git(top, "diff", "HEAD", "--binary", "--", here, *excl)
+        untracked = [p for p in h.git(top, "ls-files", "--others", "--exclude-standard", "--", here, *excl).splitlines()
+                     if p.endswith(CODE_SUFFIXES)]
+        blob = diff.encode() + b"".join(p.encode() + b"\0" + (Path(top) / p).read_bytes() for p in sorted(untracked))
+        parts.append(f"{branch}@{head}" + (f"+{short(blob)}" if blob else ""))
+    except (Failed, OSError, subprocess.TimeoutExpired):
+        parts.append("not under git")
+    adapter = b"".join((ROOT / p).read_bytes() for p in ("channels/hive.py", "tools/hive_task.py") if (ROOT / p).is_file())
+    parts.append(f"hive adapter {short(adapter)}" if adapter else "no hive adapter")
+    for name, path in sorted(h.c.get("declare_files", {}).items()):
+        f = ROOT / path
+        parts.append(f"{name} {short(f.read_bytes())}" if f.is_file() else f"{name} missing")
+    return "; ".join(parts)
+
+
+def declare(h):
+    """Re-declare the agent when its code changed (record SPEC §6.2: agents re-declare on
+    self-modification). The code state goes into the declaration's harness line; model and sandbox
+    stay as declared. Only for an Iter agent's folder, or where config names the "harness" (hive-task's
+    queue folder for an OpenClaw agent holds no code)."""
+    if "harness" not in h.c and not (ROOT / "channels" / "hive.py").is_file():
+        return
+    actors = json.loads(h.hive("actors"))
+    cur = next((a.get("declaration") or {} for a in actors if a.get("id") == h.actor), None)
+    if not cur:
+        return
+    harness = f"{h.c.get('harness', 'iter')} {code_state(h)}"[:200]
+    if cur.get("harness") == harness:
+        return
+    data = {"actor_id": h.actor, "declaration": {**cur, "harness": harness}}
+    h.hive("emit", "actor.declared", "--data", json.dumps(data))
+    log(f"declared: {harness}")
+
+
 def daemon():
     global DELIVER
     _dirs()
@@ -386,7 +440,8 @@ def daemon():
         return
     DELIVER = h.c.get("deliver") or None             # e.g. ["openclaw", "agent", "exec", "--agent", "main", "--message", "{text}"]
     every = int(h.c.get("poll_seconds", 30))
-    next_poll = 0.0
+    declare_every = int(h.c.get("declare_seconds", 600))   # 0: never
+    next_poll = next_declare = 0.0
     while True:
         for path in sorted(OUTBOX.glob("[0-9]*")):
             try:
@@ -406,6 +461,12 @@ def daemon():
             except Exception as e:   # keep running through record or network errors
                 log(f"poll failed: {type(e).__name__}: {e}")
             next_poll = time.time() + every
+        if declare_every and time.time() >= next_declare:
+            try:
+                declare(h)
+            except Exception as e:
+                log(f"declare failed: {type(e).__name__}: {e}")
+            next_declare = time.time() + declare_every
         time.sleep(1)
 
 

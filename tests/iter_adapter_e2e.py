@@ -198,7 +198,8 @@ def main():
                     "repos": repos, "poll_seconds": 2}
         code = tmp / "w1-code"
         sh("git", "clone", "-q", str(tmp / "code.git"), str(code), env=gitenv)
-        w1 = Agent(tmp / "iter-w1", "w1", conf("w1", {"code": str(code)}), sidecar=True)   # as on vm2
+        w1 = Agent(tmp / "iter-w1", "w1", {**conf("w1", {"code": str(code)}), "declare_seconds": 2,
+                                          "declare_files": {"flags": "memory/flags.json"}}, sidecar=True)   # as on vm2
         rv1 = Agent(tmp / "iter-rv1", "rv1", conf("rv1", {}))
         agents += [w1, rv1]
         os.environ["HIVEPIN_CACHE_DIRECTORY"] = str(tmp / "pincache")
@@ -321,6 +322,37 @@ def main():
         print("  reviewer runner: kickoff written, stand-in command ran, verdict passed recorded, cause = the result")
         hive("cos", "emit", "task.closed", "--task", "t2")
         assert json.loads(hive("cos", "task", "t2"))["task"]["status"] == "done"
+        # self-modification: the sidecar re-declares the agent when its code changes
+        def harness():
+            return next(a for a in json.loads(hive("cos", "actors")) if a["id"] == "w1")["declaration"]["harness"]
+
+        def changes(before):
+            for _ in range(30):
+                h = harness()
+                if h != before:
+                    return h
+                time.sleep(1)
+            raise AssertionError(f"no re-declaration from {before!r}")
+        h0 = harness()
+        assert h0.startswith("iter not under git; hive adapter "), h0
+        sh("git", "-C", str(w1.root), "init", "-q", env=gitenv)
+        (w1.root / ".gitignore").write_text(".runtime/\n")
+        (w1.root / "agent.py").write_text("print('v1')\n")
+        sh("git", "-C", str(w1.root), "add", "-A", env=gitenv)
+        sh("git", "-C", str(w1.root), "commit", "-q", "-m", "v1", env=gitenv)
+        h1 = changes(h0)
+        assert "@" in h1 and "+" not in h1.split(";")[0] and "flags missing" in h1, h1
+        (w1.root / "skill.py").write_text("print('new')\n")                # uncommitted code
+        h2 = changes(h1)
+        assert h2.split(";")[0].startswith(h1.split(";")[0] + "+"), (h1, h2)
+        (w1.root / "memory").mkdir()
+        (w1.root / "memory" / "flags.json").write_text('{"goal_prompt": false}')
+        h3 = changes(h2)
+        assert "flags " in h3 and "flags missing" not in h3, h3
+        (w1.root / "memory" / "notes.txt").write_text("not code")         # not code: no re-declaration
+        time.sleep(5)
+        assert harness() == h3, (h3, harness())
+        print("  self-modification: re-declared on commit, uncommitted code and a flags file; not on other files")
         print("PASSED (t1: worker in sidecar mode, reviewer in spawn mode; t2: hive-task CLI and the reviewer runner): assigned, accepted, progress (tool and send), nudged, blocked, answered, unblocked, result refused "
               "until pushed, result with code+base pins, review failed, new result, review passed, closed")
     finally:
