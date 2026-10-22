@@ -13,7 +13,7 @@ while read -r old new ref; do
   case "$ref" in
     refs/heads/hive/*) ;;
     refs/heads/main)
-      [ "$REPO" = hive-workspace.git ] \
+      case "$REPO" in *workspace.git) true ;; *) false ;; esac \
         || { echo "refused ($HIVE_GIT_ACTOR): $ref in $REPO (merging is decided after review)" >&2; rc=1; continue; } ;;
     *) echo "refused ($HIVE_GIT_ACTOR): $ref" >&2; rc=1; continue ;;
   esac
