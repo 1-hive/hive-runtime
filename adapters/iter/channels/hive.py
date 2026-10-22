@@ -148,7 +148,8 @@ class Hive:
         self.write_registry()
         self.env = {**os.environ, "HIVE_URL": conf["hive_url"], "HIVE_ID": conf["hive_id"],
                     "HIVE_KEY_FILE": conf["key_file"], "HIVE_VIA": f"iter:{self.actor}",
-                    "HIVEPIN_REPOSITORY_REGISTRY_PATH": str(RUN / "registry.json")}
+                    "HIVEPIN_REPOSITORY_REGISTRY_PATH": str(RUN / "registry.json"),
+                    "GIT_OPTIONAL_LOCKS": "0"}   # only read the agent's clones: never refresh their index
 
     def write_registry(self):
         """Pins resolve commits in the registry's local_path: point it at this agent's own clones, as
@@ -271,6 +272,20 @@ class Hive:
         return self.pin(self.ws["repository"], self.git(clone, "rev-parse", "HEAD").strip(), str(rel), kind)
 
 
+def pushed(h, clone, head):
+    """Whether a commit is on a remote branch, without writing to the clone (a sidecar may run as another
+    user than the agent): a branch tip on any remote is the commit, or contains it."""
+    for remote in h.git(clone, "remote", check=False).split():
+        out = h.run("git", "-C", clone, "ls-remote", "--heads", remote, check=False)
+        for tip in {line.split()[0] for line in out.splitlines() if line.strip()}:
+            if tip == head:
+                return True
+            if subprocess.run(["git", "-C", clone, "merge-base", "--is-ancestor", head, tip], env=h.env,
+                              capture_output=True).returncode == 0:
+                return True
+    return bool(h.git(clone, "branch", "-r", "--contains", head, check=False).strip())
+
+
 SKIP_DIRS = {".runtime", "node_modules", ".cache", ".venv", "venv", "__pycache__", ".npm", ".hive"}
 
 
@@ -354,9 +369,7 @@ def do(h, req):
                 raise Failed(f"no recorded base for {r}: accept the task through this tool first")
             clone = h.clone(r)
             head = h.git(clone, "rev-parse", "HEAD").strip()
-            h.git(clone, "fetch", "-q", "origin")
-            pushed = h.git(clone, "branch", "-r", "--contains", head, check=False).strip()
-            if not pushed:
+            if not pushed(h, clone, head):
                 raise Failed(f"push {r} first: its HEAD {head[:12]} is on no remote branch")
             refs += [("code", h.pin(r, head, name="code")), ("base", h.pin(r, base[r], name="base"))]
         e = h.emit("task.result_posted", tid, None, [("result", h.report(t, "result", text))] + refs,
