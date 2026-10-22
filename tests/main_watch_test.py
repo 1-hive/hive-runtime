@@ -72,7 +72,18 @@ def main():
     sh("git", "push", "-q", "-f", "origin", "HEAD:main", cwd=work)
     out = run()
     assert "was rewritten" in out, out
-    print("PASSED: first run silent; merge commit and fast-forward of reviewed results pass; a direct commit and a rewrite are flagged")
+    # the registry form: the clone's HEAD names the branch
+    reg = tmp / "registry.json"
+    reg.write_text(__import__("json").dumps({"version": 1, "repositories": {
+        "app": {"local_path": str(tmp / "clone.git")}, "elsewhere": {"local_path": "/tmp"}}}))
+    sys.argv = ["main-watch.py", "--registry", str(reg), "--under", str(tmp)]
+    commit("another direct one")
+    sh("git", "push", "-q", "origin", "HEAD:main", cwd=work)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mw.main()
+    assert "app: 1 commit(s) reached main" in buf.getvalue(), buf.getvalue()
+    print("PASSED: first run silent; merge commit and fast-forward of reviewed results pass; a direct commit and a rewrite are flagged; the registry form finds the clone and its branch")
 
 
 if __name__ == "__main__":

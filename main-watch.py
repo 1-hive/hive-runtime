@@ -2,6 +2,10 @@
 """Flag commits that reach a repository's main branch without a passed review on the record.
 
     main-watch.py [--say CMD] NAME=BARE_CLONE[:BRANCH] ...
+    main-watch.py [--say CMD] --registry REGISTRY.json --under DIR
+
+The second form watches every repository in a hivepin registry whose local_path (a bare clone) is under
+DIR, on its default branch (the clone's HEAD).
 
 Where agents could push to main but by agreement don't (they push a branch, open a pull request, and a
 human merges it), this is the check after the fact instead of a block. Each run fetches each bare clone
@@ -77,8 +81,19 @@ def check(name: str, repo: str, branch: str, old: str | None, reviewed: set[str]
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--say", help="command that sends an alert, given as its last argument")
-    ap.add_argument("repos", nargs="+", metavar="NAME=BARE_CLONE[:BRANCH]")
+    ap.add_argument("--registry", help="watch the registry's repositories whose local_path is under --under")
+    ap.add_argument("--under", help="with --registry: the folder of the bare clones")
+    ap.add_argument("repos", nargs="*", metavar="NAME=BARE_CLONE[:BRANCH]")
     a = ap.parse_args()
+    if a.registry:
+        under = Path(a.under or "/").resolve()
+        for name, r in sorted(json.loads(Path(a.registry).read_text())["repositories"].items()):
+            path = Path(r.get("local_path") or "/nonexistent").resolve()
+            if under in path.parents and (path / "HEAD").is_file():
+                head = git(str(path), "symbolic-ref", "--short", "HEAD", check=False) or "main"
+                a.repos.append(f"{name}={path}:{head}")
+    if not a.repos:
+        ap.error("no repositories to watch")
     state = json.loads(STATE.read_text()) if STATE.is_file() else {}
     reviewed = reviewed_commits()
     for spec in a.repos:
