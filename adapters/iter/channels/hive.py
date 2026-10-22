@@ -138,18 +138,57 @@ class Hive:
         self.c = conf
         self.actor = conf["actor"]
         self.ws = conf["workspace"]          # {"repository": ..., "clone": ..., "branch": ...}
-        self.repos = conf.get("repos", {})   # code repository name -> the agent's clone
-        # Pins resolve commits in the registry's local_path: point it at this agent's own clones,
-        # as hive-runtime's launcher does for a task folder.
-        reg = json.loads(Path(conf["registry"]).read_text())
-        for name, clone in [(self.ws["repository"], self.ws["clone"]), *self.repos.items()]:
-            if name not in reg["repositories"]:
+        # code repository name -> the agent's clone: config's "repos", then those found earlier (find_clone)
+        found = json.loads((RUN / "repos.json").read_text()) if (RUN / "repos.json").is_file() else {}
+        self.repos = {**found, **conf.get("repos", {})}
+        self.reg = json.loads(Path(conf["registry"]).read_text())
+        for name in [self.ws["repository"], *self.repos]:
+            if name not in self.reg["repositories"]:
                 raise Failed(f"{name} isn't in the registry {conf['registry']}")
-            reg["repositories"][name]["local_path"] = clone
-        (RUN / "registry.json").write_text(json.dumps(reg, indent=1))
+        self.write_registry()
         self.env = {**os.environ, "HIVE_URL": conf["hive_url"], "HIVE_ID": conf["hive_id"],
                     "HIVE_KEY_FILE": conf["key_file"], "HIVE_VIA": f"iter:{self.actor}",
                     "HIVEPIN_REPOSITORY_REGISTRY_PATH": str(RUN / "registry.json")}
+
+    def write_registry(self):
+        """Pins resolve commits in the registry's local_path: point it at this agent's own clones, as
+        hive-runtime's launcher does for a task folder."""
+        reg = json.loads(json.dumps(self.reg))
+        for name, clone in [(self.ws["repository"], self.ws["clone"]), *self.repos.items()]:
+            reg["repositories"][name]["local_path"] = clone
+        (RUN / "registry.json").write_text(json.dumps(reg, indent=1))
+
+    def clone(self, repo):
+        """The agent's clone of a registered repository: from config's "repos", or else the git folder under
+        config's "repo_search" folders (default: the agent's folder) whose remote is one of the repository's
+        fetch URLs in the registry. A found clone is remembered (.runtime/hive/repos.json)."""
+        if repo in self.repos:
+            return self.repos[repo]
+        spec = self.reg["repositories"].get(repo)
+        if not spec:
+            raise Failed(f"{repo} isn't in the hive's registry")
+        want = {_norm_url(u) for u in spec.get("fetch_urls", [])}
+        hits = []
+        for top in self.c.get("repo_search") or [str(ROOT)]:
+            for d, sub, files in os.walk(top):
+                if d[len(top):].count(os.sep) >= 4:
+                    sub[:] = []
+                    continue
+                sub[:] = [x for x in sub if x not in SKIP_DIRS]
+                if ".git" in sub or ".git" in files:
+                    urls = self.run("git", "-C", d, "remote", "-v", check=False).split()
+                    if want & {_norm_url(u) for u in urls[1::3]}:
+                        hits.append(d)
+                    sub[:] = [x for x in sub if x != ".git"]
+        if not hits:
+            raise Failed(f"no clone of {repo} found (looked under {', '.join(self.c.get('repo_search') or [str(ROOT)])}): "
+                         f"clone {spec['fetch_urls'][0]} there, or name it under \"repos\" in the sidecar's config")
+        hits.sort(key=lambda d: (Path(d).name.lower() != repo, len(d)))   # a folder named like it, then the shallowest
+        self.repos[repo] = hits[0]
+        found = json.loads((RUN / "repos.json").read_text()) if (RUN / "repos.json").is_file() else {}
+        (RUN / "repos.json").write_text(json.dumps({**found, repo: hits[0]}, indent=1))
+        self.write_registry()
+        return hits[0]
 
     def run(self, *cmd, cwd=None, check=True):
         r = subprocess.run(cmd, cwd=cwd, env=self.env, capture_output=True, text=True, timeout=300)
@@ -232,6 +271,19 @@ class Hive:
         return self.pin(self.ws["repository"], self.git(clone, "rev-parse", "HEAD").strip(), str(rel), kind)
 
 
+SKIP_DIRS = {".runtime", "node_modules", ".cache", ".venv", "venv", "__pycache__", ".npm", ".hive"}
+
+
+def _norm_url(u):
+    """github.com/owner/repo for any of a repository's URL forms (https, ssh, scp-like, with or without .git)."""
+    u = re.sub(r"^[a-z+]+://", "", u.strip().lower())
+    u = re.sub(r"^[^@/]*@", "", u)
+    u = re.sub(r"^([^/:]+):\d+/", r"\1/", u)                   # host:port/path
+    u = u.replace(":", "/", 1) if re.match(r"^[^/]+:[^/]", u) else u   # scp-like host:path
+    u = re.sub(r"^ssh\.github\.com/", "github.com/", u)          # GitHub's SSH over port 443
+    return re.sub(r"(\.git)?/*$", "", u)
+
+
 def _mark(tid, key):
     """Note a moment of the agent's work on a task (for the time split: record work versus the rest)."""
     f = TASKS / f"{tid}.json"
@@ -267,9 +319,10 @@ def do(h, req):
         h.emit("task.accepted", tid, cause=h.last_event(tid, "task.assigned", "task.reassigned"))
         base = {}
         for r in (t.get("ext") or {}).get("repos") or []:
-            if r not in h.repos:
-                raise Failed(f"accepted, but {r} has no clone in config.json; you can't post a result for it")
-            base[r] = h.git(h.repos[r], "rev-parse", "HEAD").strip()
+            try:
+                base[r] = h.git(h.clone(r), "rev-parse", "HEAD").strip()
+            except Failed as e:
+                raise Failed(f"accepted, but {e}; you can't post a result for {r} until then (accept again after cloning)")
         (TASKS / f"{tid}.json").write_text(json.dumps({"base": base, "accepted_at": time.time()}))
         return f"accepted {tid}" + (f"; base {', '.join(f'{r} {c[:12]}' for r, c in base.items())}" if base else "")
     if action in ("progress", "checkpoint"):
@@ -297,9 +350,9 @@ def do(h, req):
         if f.is_file():
             base = json.loads(f.read_text()).get("base", {})
         for r in (t.get("ext") or {}).get("repos") or []:
-            if r not in h.repos or r not in base:
-                raise Failed(f"no clone or no recorded base for {r}: accept the task through this tool first")
-            clone = h.repos[r]
+            if r not in base:
+                raise Failed(f"no recorded base for {r}: accept the task through this tool first")
+            clone = h.clone(r)
             head = h.git(clone, "rev-parse", "HEAD").strip()
             h.git(clone, "fetch", "-q", "origin")
             pushed = h.git(clone, "branch", "-r", "--contains", head, check=False).strip()
