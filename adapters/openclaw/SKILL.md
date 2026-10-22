@@ -21,6 +21,7 @@ All through `hive-task` (each prints `OK:` or `FAILED:`; in sidecar mode it wait
 
 Rules:
 - Never post a result for work you didn't push. `result` is refused until the code is on the remote.
+- Never push to `main` (or `master`), even where you could: push your branch and open a pull request; a human merges it after the review.
 - Stay inside the order's scope; anything beyond it is a new task for the chief of staff.
 - Don't fix a result you're reviewing, and don't coordinate with its author.
 - A failed review comes back to you as a message: address it and post a new result.
