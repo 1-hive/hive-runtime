@@ -342,7 +342,8 @@ def main():
         assert t2["latest_review"]["verdict"] == "passed", t2.get("latest_review")
         rev = [json.loads(l) for l in hive("cos", "events").splitlines() if '"review.recorded"' in l and '"t2"' in l][-1]
         assert rev.get("cause") == {"event": cr2["event_id"]}, rev.get("cause")
-        print("  reviewer runner: kickoff written, stand-in command ran, verdict passed recorded, cause = the result")
+        assert (tmp / "clones" / "code" / ".git").is_dir(), "the reviewer clones a repository it has no clone of"
+        print("  reviewer runner: kickoff written, its own clone made, stand-in command ran, verdict passed recorded, cause = the result")
         hive("cos", "emit", "task.closed", "--task", "t2")
         assert json.loads(hive("cos", "task", "t2"))["task"]["status"] == "done"
         # self-modification: the sidecar re-declares the agent when its code changes

@@ -6,6 +6,7 @@
 
 The config is the Iter adapter's (adapters/iter/README.md: actor, hive_url, hive_id, key_file,
 registry, workspace, repos), plus:
+    "clones_dir":   where it clones a repository it has no clone of (default: clones/ beside the workspace)
     "review_cmd":   the command, as a list; "{kickoff}" is replaced by the kickoff file's path,
                     "{text}" by its contents; it runs in the workspace clone
     "poll_seconds": default 30;  "timeout_seconds": default 5400;  "retry_seconds": default 900
@@ -36,6 +37,27 @@ def load_channel():
     return mod
 
 
+def reviewer_clone(h, repo):
+    """The reviewer's clone of a repository: one it has (config's "repos", or found under "repo_search"), or
+    else a fresh clone from the registry's first fetch URL into its own clones/ folder. Fetched either way."""
+    try:
+        clone = h.clone(repo)
+    except Exception:
+        spec = h.reg["repositories"].get(repo) or {}
+        url = (spec.get("fetch_urls") or [None])[0]
+        if not url:
+            return None
+        clone = str(Path(h.c.get("clones_dir") or Path(h.ws["clone"]).parent / "clones") / repo)
+        if not Path(clone, ".git").exists():
+            Path(clone).parent.mkdir(parents=True, exist_ok=True)
+            if subprocess.run(["git", "clone", "-q", url, clone], capture_output=True).returncode:
+                return None
+        h.repos[repo] = clone
+        h.write_registry()
+    subprocess.run(["git", "-C", clone, "fetch", "-q", "origin"], capture_output=True)
+    return clone
+
+
 def kickoff(h, t):
     """What the reviewer gets: the order, the result, and where the code is."""
     cr = t["current_result"]
@@ -54,7 +76,7 @@ def kickoff(h, t):
     except (ValueError, KeyError):
         pass
     for repo, cb in refs.items():
-        clone = h.repos.get(repo)
+        clone = reviewer_clone(h, repo)
         lines += ["", f"## Code: {repo}", f"base {cb.get('base')} .. code {cb.get('code')}"
                   + (f"; your clone: {clone} (run `git fetch` there, then `git diff {cb.get('base')}..{cb.get('code')}` "
                      f"and check out {cb.get('code')} to run things)" if clone else " (no clone configured)")]
