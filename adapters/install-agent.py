@@ -8,7 +8,8 @@ Its sidecar (adapters/iter/sidecar.py, with the key) is set up and started separ
 
 iter: copies the hive channel and tool into the Iter folder (channels/hive.py, tools/hive_task.py),
 writes .hive/config.json = {"daemon": "sidecar"}, and adds the hive rule (adapters/hive-rule.txt) to the
-prompt file (default prompt.txt in the folder).
+prompt file (default prompt.txt in the folder). --cos-handle names the chief of staff's chat handle in that
+rule (the bridge answers only a real mention of its bot), e.g. @hive_cos_bot.
 
 openclaw: copies hive-task (with the channel module it loads) into D, the skill into W/skills/hive/
 (naming hive-task's path), adds "hive" to agents.defaults.skills in the config, writes
@@ -35,7 +36,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 BEGIN, END = "# --- hive (hive-runtime install-agent.py) ---", "# --- end hive ---"
-RULE = (HERE / "hive-rule.txt").read_text().strip()
+RULE_TEXT = (HERE / "hive-rule.txt").read_text().strip()   # {cos}: the chief of staff's chat handle (--cos-handle)
 
 
 def owner_of(p: Path):
@@ -110,7 +111,7 @@ def iter_agent(a):
     for dst, src in files.items():
         put(src.read_text(), dst, like)
     put(json.dumps({"daemon": "sidecar"}) + "\n", f / ".hive" / "config.json", like)
-    set_block(prompt, RULE)
+    set_block(prompt, RULE_TEXT.replace("{cos}", a.cos_handle))
 
 
 def openclaw_agent(a):
@@ -135,13 +136,13 @@ def openclaw_agent(a):
     put((HERE / "openclaw" / "hive-task").read_text(), task_bin, w, mode=0o755)
     put((HERE / "iter" / "channels" / "hive.py").read_text(), d / "iter" / "channels" / "hive.py", w)
     seen = agent_path(task_bin, maps)
-    skill = (HERE / "openclaw" / "SKILL.md").read_text()
+    skill = (HERE / "openclaw" / "SKILL.md").read_text().replace("{cos}", a.cos_handle)
     head, sep, body = skill.partition("\n---\n")
     skill = head + sep + f"\n`hive-task` is `{seen}` (run it by that path).\n" + body
     put(skill, w / "skills" / "hive" / "SKILL.md", w)
     put(json.dumps({"daemon": "sidecar", "root": agent_path(Path(a.queue), maps)}) + "\n",
         home / ".hive" / "config.json", w)
-    set_block(w / "AGENTS.md", RULE)
+    set_block(w / "AGENTS.md", RULE_TEXT.replace("{cos}", a.cos_handle))
     set_block(w / "HEARTBEAT.md", f"- Run `{seen} inbox`. If it shows a task, a question's answer, a review or a nudge "
                                   "for you, act on it as the hive skill says; otherwise say nothing about it.")
     skills(conf, add=True)
@@ -208,12 +209,14 @@ def main():
     i.add_argument("--folder", required=True)
     i.add_argument("--prompt")
     i.add_argument("--undo", action="store_true")
+    i.add_argument("--cos-handle", default="@cos", help="the chief of staff's chat handle, e.g. @hive_cos_bot")
     o = sub.add_parser("openclaw")
     for x in ("--workspace", "--config", "--queue", "--adapter-dir"):
         o.add_argument(x, required=True)
     o.add_argument("--home")
     o.add_argument("--map", action="append")
     o.add_argument("--hook-token-file")
+    o.add_argument("--cos-handle", default="@cos", help="the chief of staff's chat handle, e.g. @hive_cos_bot")
     o.add_argument("--agent", default="main")
     o.add_argument("--undo", action="store_true")
     a = ap.parse_args()

@@ -1,3 +1,3 @@
 HIVE: formal work arrives through the hive (your hive channel or `hive-task`); do it through the hive tool.
-If a human asks you in chat for substantive work (code, a document, anything that needs a review), ask @cos to file it as a task for you, replying to their message, and do it under that task. Small things (a question, a lookup, a quick check) you just answer.
+If a human asks you in chat for substantive work (code, a document, anything that needs a review), ask the chief of staff ({cos}) to file it as a task for you, replying to their message, and do it under that task. Small things (a question, a lookup, a quick check) you just answer.
 Never push to main or master: push your branch (hive/<task>) and post the result; a human merges after the review. Never edit the hive channel, the hive tool or skill, Astra or the chief of staff. Changing another bot's code is a task too.
