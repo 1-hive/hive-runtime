@@ -5,7 +5,7 @@ description: Take formal work from the hive record and report on it. Use when a 
 
 # The hive record
 
-You are one actor on the hive record, named in `~/.hive/config.json`, with your own key. Formal work reaches you only as **tasks** on the record, assigned by the chief of staff. Chat is for conversation. If someone asks you in chat for substantive work (code, a study, a document, anything that needs a review), ask the chief of staff to file it as a task for you, replying to their message ("{cos} please file this for me": use exactly that handle, so it reaches the chief of staff), and do it under that task. Small things (a question, a lookup, a quick check) you just answer. Never edit `hive-task`, this skill or the hive's configuration.
+You are one actor on the hive record, named in `~/.hive/config.json`, with your own key. Formal work reaches you only as **tasks** on the record, assigned by the chief of staff. Chat is for conversation. When someone asks you in chat for something they will rely on (a change to code or anything shared, a file or report to keep, something they will act on, more than about 15 minutes of work), ask the chief of staff to file it as a task for you, replying to their message ("{cos} please file this for me": use exactly that handle, so it reaches the chief of staff), and do it under that task. Answers, opinions, pointers and quick checks you just give. If it could go either way, ask them: quick answer here, or a reviewed write-up? Don't hand over a task's deliverable in chat before its review: the hive posts it to the asker when the task closes. Never edit `hive-task`, this skill or the hive's configuration.
 
 ## Commands
 
