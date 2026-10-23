@@ -52,6 +52,10 @@ Agents may change their own code; the sidecar re-declares the agent on the recor
 
 The agents keep talking to people and to each other. Substantive work asked in chat is filed by the agent itself, through the chief of staff (the rule `install-agent.py` adds to the agent's prompt, `adapters/hive-rule.txt`); small things are just answered. The record holds formal work; the bridge's dialogue log holds the conversation.
 
+## Seeing what the agents do: the Floor (optional)
+
+hive-bridge's Floor is a read-only page over the record: each agent's card (what it's doing now, what it owes, when it last spoke), the work by stage, and what's waiting on people (escalations, questions, reviewed code not yet merged, the chief of staff's requests). It is optional: an operator's view, never part of the record's rules. What the record can't know (is the agent busy, chatting, offline) comes from **beacons**, which each sidecar and the reviewer runner post every 30 s, signed with the agent's key and carrying ids and times only, never message text (`adapters/iter/README.md`, "Beacons"). Give the Floor's user read access to the repository clones it checks for merges.
+
 ## Pitfalls met on the way
 
 - Python installed by `uv` under root's home: other users can't run it. Set `UV_PYTHON_INSTALL_DIR` under the shared install folder.

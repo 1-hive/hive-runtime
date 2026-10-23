@@ -69,6 +69,8 @@ Always: `v` (1), `actor`, `kind` (`iter`, `openclaw`, `reviewer` or `agent`), `a
 
 **Signed** with the agent's record key, the way the record signs writes but under another prefix, so a beacon can never be replayed as a record write: the body is canonical JSON (sorted keys, no spaces), and the headers are `X-Hive-Key` (the public key), `X-Hive-Signed-At` (UTC, `YYYY-MM-DDTHH:MM:SSZ`) and `X-Hive-Signature`, the ed25519 signature of `hive-beacon1\n<hive id>\n<signed at>\n<sha256 hex of the body>`. The receiver checks the key belongs to an active actor and the time is recent. Test: `tests/beacon_test.py`.
 
+**What a receiver does** (hive-bridge's Floor, `POST /api/beacon`; another receiver should do the same): refuse a body over 128 kB (413) or one that isn't JSON (400); refuse a `X-Hive-Signed-At` more than 5 minutes off its clock (403), a bad signature (403), or a key that isn't an active actor's on the record, or whose actor isn't the body's `actor` (403); otherwise keep the beacon as that actor's latest and answer 204. An actor whose last beacon is older than 150 s is shown as offline, and one with a request in progress but no step for 15 minutes as maybe stuck. Beacons are display only: nothing on the record, in a task's state or in any decision reads them.
+
 State lives in `.runtime/hive/` in the agent's folder: the queues, the last state seen, minted pins, and a log (`log.txt`).
 
 To turn them on in an existing config: `adapters/set-beacon.py <config.json> --url https://<floor>/api/beacon [--iter-channel DIR] [--openclaw-sessions DIR]` (keeps the file's owner and mode; `--off` removes them), then restart the sidecar or runner.
