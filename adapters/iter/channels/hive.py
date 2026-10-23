@@ -275,6 +275,30 @@ class Hive:
         return self.pin(self.ws["repository"], self.git(clone, "rev-parse", "HEAD").strip(), str(rel), kind)
 
 
+def default_tip(h, clone):
+    """Where work in this repository starts from: the remote's default branch, not wherever the clone happens to
+    be (a clone left on an earlier task's branch would make that branch the base, which the new work, started
+    from main, doesn't contain: CODE_BASE_INVALID)."""
+    for ref in ("refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"):
+        tip = h.git(clone, "rev-parse", "--verify", "-q", ref + "^{commit}", check=False).strip()
+        if tip:
+            return tip
+    return h.git(clone, "rev-parse", "HEAD").strip()
+
+
+def base_for(h, clone, head, recorded):
+    """The base to pin with a result: the one recorded at accept if the work descends from it; otherwise where
+    the work left the default branch (a task accepted while the clone was elsewhere)."""
+    if recorded and subprocess.run(["git", "-C", clone, "merge-base", "--is-ancestor", recorded, head], env=h.env,
+                                   capture_output=True).returncode == 0:
+        return recorded
+    fork = h.git(clone, "merge-base", head, default_tip(h, clone), check=False).strip()
+    if not fork:
+        raise Failed(f"your work in {clone} shares no history with its default branch: start it from there")
+    log(f"base {(recorded or '?')[:12]} isn't an ancestor of {head[:12]}; using {fork[:12]}, where the work left the default branch")
+    return fork
+
+
 def pushed(h, clone, head):
     """Whether a commit is on a remote branch, without writing to the clone (a sidecar may run as another
     user than the agent): a branch tip on any remote is the commit, or contains it."""
@@ -338,7 +362,7 @@ def do(h, req):
         base = {}
         for r in (t.get("ext") or {}).get("repos") or []:
             try:
-                base[r] = h.git(h.clone(r), "rev-parse", "HEAD").strip()
+                base[r] = default_tip(h, h.clone(r))
             except Failed as e:
                 raise Failed(f"accepted, but {e}; you can't post a result for {r} until then (accept again after cloning)")
         (TASKS / f"{tid}.json").write_text(json.dumps({"base": base, "accepted_at": time.time()}))
@@ -372,6 +396,7 @@ def do(h, req):
                 raise Failed(f"no recorded base for {r}: accept the task through this tool first")
             clone = h.clone(r)
             head = h.git(clone, "rev-parse", "HEAD").strip()
+            base[r] = base_for(h, clone, head, base[r])
             if not pushed(h, clone, head):
                 raise Failed(f"push {r} first: its HEAD {head[:12]} is on no remote branch")
             refs += [("code", h.pin(r, head, name="code")), ("base", h.pin(r, base[r], name="base"))]
