@@ -10,6 +10,7 @@ registry, workspace, repos), plus:
     "review_cmd":   the command, as a list; "{kickoff}" is replaced by the kickoff file's path,
                     "{text}" by its contents; it runs in the workspace clone
     "poll_seconds": default 30;  "timeout_seconds": default 5400;  "retry_seconds": default 900
+    "review_notes": text (or lines) added to every kickoff, e.g. how to set up a clone to run its tests
 
 It watches the record for results assigned to this reviewer that it hasn't judged, writes a kickoff
 (the order, the result, each repository's base..code range), runs the command, and takes the verdict
@@ -85,6 +86,9 @@ def kickoff(h, t):
         lines += ["", f"## Code: {repo}", f"base {cb.get('base')} .. code {cb.get('code')}"
                   + (f"; your clone: {clone} (run `git fetch` there, then `git diff {cb.get('base')}..{cb.get('code')}` "
                      f"and check out {cb.get('code')} to run things)" if clone else " (no clone configured)")]
+    notes = h.c.get("review_notes")
+    if notes:   # the hive's own notes for its reviewer, e.g. how to set up a clone to run its tests
+        lines += ["", "## Notes for reviewers in this hive", notes if isinstance(notes, str) else "\n".join(notes)]
     return "\n".join(lines) + "\n"
 
 
