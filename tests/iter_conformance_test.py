@@ -93,8 +93,8 @@ def agent(root: Path, name: str, max_tools=30, extra_tools=(), flag="--invoke") 
     return f
 
 
-def run(folder: Path) -> tuple[int, dict]:
-    p = subprocess.run([sys.executable, str(SUITE), "--folder", str(folder), "--json"], capture_output=True, text=True, check=False)
+def run(folder: Path, *extra: str) -> tuple[int, dict]:
+    p = subprocess.run([sys.executable, str(SUITE), "--folder", str(folder), "--json", *extra], capture_output=True, text=True, check=False)
     rows = json.loads(p.stdout)
     by = {}
     for r in rows:
@@ -117,6 +117,15 @@ def main():
 
         code, by = run(agent(root, "crowded", max_tools=3, extra_tools=("alpha", "beta", "gamma")))
         assert code == 1 and by["tool_slot"][0][0] == "FAIL" and "tool 4 of 5" in by["tool_slot"][0][1], by
+
+        f = agent(root, "vendored")              # imports a package only the agent's PYTHONPATH has
+        (f / "vendor").mkdir()
+        (f / "vendor" / "agentdep.py").write_text("")
+        (f / "iter.py").write_text("import agentdep\n" + (f / "iter.py").read_text())
+        code, by = run(f)
+        assert code == 1 and "agentdep" in by["tool_metadata"][0][1], by["tool_metadata"]
+        code, by = run(f, "--env", f"PYTHONPATH={f / 'vendor'}")
+        assert code == 0, by
 
         code, by = run(agent(root, "old", flag="--run-dynamic"))
         assert code == 1 and by["invoke"][0][0] == "FAIL", by

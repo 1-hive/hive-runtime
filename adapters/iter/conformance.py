@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Does this Iter agent work with the hive adapter? Run it against an agent's folder, of any Iter variant.
 
-    conformance.py --folder <the agent's Iter folder> [--python <the agent's interpreter>] [--prompt FILE] [--json]
+    conformance.py --folder <the agent's Iter folder> [--python <the agent's interpreter>] [--env KEY=VALUE ...]
+                   [--prompt FILE] [--json]
+
+Run it where the agent runs (e.g. inside its container, as its uid), with the agent's interpreter and the
+environment it needs to import iter.py (often PYTHONPATH).
 
 Iter agents differ and modify themselves; the hive adapter (channels/hive.py, tools/hive_task.py) must
 keep working under each of them. This checks the contract between the two, the way the agent itself
@@ -72,8 +76,8 @@ def sha(p: Path) -> str:
 class Agent:
     """A scratch copy of the agent, called through its own iter.py --invoke."""
 
-    def __init__(self, folder: Path, python: str):
-        self.folder, self.python = folder, python
+    def __init__(self, folder: Path, python: str, env: dict | None = None):
+        self.folder, self.python, self.env = folder, python, env or {}
         self.src = (folder / "iter.py").read_text(encoding="utf-8", errors="replace")
         self.c = constants(self.src)
         self.tmp = Path(tempfile.mkdtemp(prefix="iter-conformance-"))
@@ -104,18 +108,21 @@ class Agent:
         payload = self.tmp / (Path(result).stem + ".payload.json")
         payload.write_text(json.dumps({"args": args, "kwargs": kwargs}))
         env = {k: v for k, v in os.environ.items() if k != "ITER_REQUEST_IDS"}
+        env.update(self.env)
         env.update(env_extra or {})
         started = time.monotonic()
         try:
-            subprocess.run([self.python, "iter.py", "--invoke", str(self.tmp / rel), function, result, str(payload)],
-                           cwd=self.tmp, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=limit, check=False)
+            p = subprocess.run([self.python, "iter.py", "--invoke", str(self.tmp / rel), function, result, str(payload)],
+                               cwd=self.tmp, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=limit,
+                               check=False)
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"TIMEOUT after {limit:g}s"}, time.monotonic() - started
         took = time.monotonic() - started
         try:
             return json.loads(Path(result).read_text()), took
         except (OSError, ValueError):
-            return {"ok": False, "error": "the --invoke worker wrote no result"}, took
+            tail = p.stderr.decode(errors="replace").strip().splitlines()[-1:] or ["no output"]
+            return {"ok": False, "error": f"the --invoke worker wrote no result ({tail[0][:200]})"}, took
 
     def outbox(self) -> list[dict]:
         out = []
@@ -128,7 +135,7 @@ class Agent:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
-def check(folder: Path, python: str, prompt: Path | None) -> list[tuple[str, str, str]]:
+def check(folder: Path, python: str, prompt: Path | None, env: dict | None = None) -> list[tuple[str, str, str]]:
     r: list[tuple[str, str, str]] = []
     add = lambda status, cid, detail: r.append((status, cid, detail))
 
@@ -195,12 +202,12 @@ def check(folder: Path, python: str, prompt: Path | None) -> list[tuple[str, str
     else:
         add(WARN, "prompt_rule", f"no hive rule in {prompt} (install-agent.py iter --prompt FILE)")
 
-    a = Agent(folder, python)
+    a = Agent(folder, python, env)
     try:
         res, _ = a.invoke("tools/hive_task.py", "__tool_metadata__")
         if not res.get("ok"):
-            add(FAIL, "tool_metadata", f"Iter can't read hive_task: {res.get('error')} (is {python} the agent's "
-                "interpreter, with its packages?)")
+            add(FAIL, "tool_metadata", f"Iter can't read hive_task: {res.get('error')}. Is {python} the agent's "
+                "interpreter, with its environment (--env PYTHONPATH=..., as the agent runs)?")
             return r
         meta = res["result"]
         params = meta.get("parameters") if isinstance(meta, dict) else None
@@ -274,9 +281,12 @@ def main() -> None:
     ap.add_argument("--folder", required=True)
     ap.add_argument("--python", default=sys.executable, help="the agent's interpreter (default: this one)")
     ap.add_argument("--prompt")
+    ap.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                    help="the agent's environment for its calls, e.g. PYTHONPATH (repeatable)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
-    results = check(Path(a.folder).resolve(), a.python, Path(a.prompt) if a.prompt else None)
+    env = dict(e.split("=", 1) for e in a.env if "=" in e)
+    results = check(Path(a.folder).resolve(), a.python, Path(a.prompt) if a.prompt else None, env)
     if a.json:
         print(json.dumps([{"status": s, "check": c, "detail": d} for s, c, d in results], indent=1))
     else:
