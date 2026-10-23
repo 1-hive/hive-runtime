@@ -39,7 +39,8 @@ def main():
     conf.parent.mkdir()
     conf.write_text(json.dumps({"agents": {"defaults": {"skills": ["github"]}}, "x": 1}))
     o = argparse.Namespace(workspace=str(w), config=str(conf), queue=str(host / "bot" / ".hive" / "queue"),
-                           adapter_dir=str(host / "bot" / "hive-adapter"), home=None, map=[f"{host}=/hive"], undo=False)
+                           adapter_dir=str(host / "bot" / "hive-adapter"), home=None, map=[f"{host}=/hive"], undo=False,
+                           hook_token_file=str(tmp / "root" / "hook-token"), agent="main")
     ia.openclaw_agent(o)
     ia.openclaw_agent(o)
     c = json.loads(conf.read_text())
@@ -51,12 +52,18 @@ def main():
     assert hb.count("/hive/bot/hive-adapter/openclaw/hive-task inbox") == 1, hb
     assert (w / "AGENTS.md").read_text().count("Never push to main") == 1
     assert (host / "bot" / "hive-adapter" / "iter" / "channels" / "hive.py").is_file()
+    tok = (tmp / "root" / "hook-token").read_text().strip()
+    hk = c["hooks"]
+    assert hk == {"enabled": True, "token": tok, "path": "/hooks", "allowedAgentIds": ["main"],
+                  "allowRequestSessionKey": False} and len(tok) > 30, hk
+    assert oct((tmp / "root" / "hook-token").stat().st_mode & 0o777) == "0o600"
     o.undo = True
     ia.openclaw_agent(o)
     assert json.loads(conf.read_text())["agents"]["defaults"]["skills"] == ["github"]
+    assert "hooks" not in json.loads(conf.read_text()) and not (tmp / "root" / "hook-token").exists()
     assert (w / "AGENTS.md").read_text() == "# Agents\n" and (w / "HEARTBEAT.md").read_text() == "# Heartbeat\n"
     assert not (w / "skills" / "hive").exists() and not (host / "bot" / "hive-adapter").exists()
-    print("PASSED: iter and openclaw: install, rerun without duplicates, paths translated for the agent, undo restores")
+    print("PASSED: iter and openclaw: install, rerun without duplicates (same webhook token), paths translated for the agent, webhook enabled for one agent with a 600 token file, undo restores")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ Its sidecar (adapters/iter/sidecar.py, with the key) is set up and started separ
 
     install-agent.py iter --folder ITER [--prompt prompt.txt] [--undo]
     install-agent.py openclaw --workspace W --config openclaw.json --queue Q --adapter-dir D
-                     [--home H] [--map HOST=AGENT] [--undo]
+                     [--home H] [--map HOST=AGENT] [--hook-token-file F [--agent main]] [--undo]
 
 iter: copies the hive channel and tool into the Iter folder (channels/hive.py, tools/hive_task.py),
 writes .hive/config.json = {"daemon": "sidecar"}, and adds the hive rule (adapters/hive-rule.txt) to the
@@ -14,6 +14,10 @@ openclaw: copies hive-task (with the channel module it loads) into D, the skill 
 (naming hive-task's path), adds "hive" to agents.defaults.skills in the config, writes
 H/.hive/config.json = {"daemon": "sidecar", "root": Q} (H: the agent's home, default W's parent), and adds
 the rule to W/AGENTS.md and a `hive-task inbox` line to W/HEARTBEAT.md.
+
+--hook-token-file F: also enables the gateway's inbound webhook (hooks: /hooks, only --agent allowed, a
+token of its own kept in F, mode 600, owned by root) so the agent's sidecar can deliver into it directly
+(adapters/openclaw/hook-deliver.py) instead of waiting for the agent to look. The gateway may need a restart.
 
 --map HOST=AGENT: the agent sees HOST's paths under AGENT (a container's mount, e.g.
 /opt/proto-hive-runtime=/hive); paths written for the agent are translated.
@@ -125,6 +129,8 @@ def openclaw_agent(a):
         set_block(w / "AGENTS.md", None)
         set_block(w / "HEARTBEAT.md", None)
         skills(conf, add=False)
+        if a.hook_token_file:
+            hooks(conf, Path(a.hook_token_file), a.agent, add=False)
         return
     put((HERE / "openclaw" / "hive-task").read_text(), task_bin, w, mode=0o755)
     put((HERE / "iter" / "channels" / "hive.py").read_text(), d / "iter" / "channels" / "hive.py", w)
@@ -139,6 +145,45 @@ def openclaw_agent(a):
     set_block(w / "HEARTBEAT.md", f"- Run `{seen} inbox`. If it shows a task, a question's answer, a review or a nudge "
                                   "for you, act on it as the hive skill says; otherwise say nothing about it.")
     skills(conf, add=True)
+    if a.hook_token_file:
+        hooks(conf, Path(a.hook_token_file), a.agent, add=True)
+
+
+def hooks(conf: Path, token_file: Path, agent: str, add: bool):
+    """The gateway's inbound webhook for the sidecar: enabled with a token of its own (kept in token_file),
+    for one agent only, no caller-chosen session keys. Removed again only if it's still ours."""
+    import secrets
+    c = json.loads(conf.read_text())
+    cur = c.get("hooks") or {}
+    token = token_file.read_text().strip() if token_file.is_file() else None
+    if not add:
+        if token and cur.get("token") == token:
+            del c["hooks"]
+            write_config(conf, c)
+            print(f"removed the hive webhook from {conf}")
+        if token_file.is_file():
+            token_file.unlink()
+        return
+    if cur.get("enabled") and cur.get("token") and cur.get("token") != token:
+        sys.exit(f"{conf} already has a webhook with another token: not touching it")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(token + "\n")
+        os.chmod(token_file, 0o600)
+    want = {"enabled": True, "token": token, "path": "/hooks", "allowedAgentIds": [agent], "allowRequestSessionKey": False}
+    if cur != want:
+        c["hooks"] = want
+        write_config(conf, c)
+        print(f"enabled the gateway webhook for agent {agent} in {conf} (token in {token_file})")
+
+
+def write_config(conf: Path, c: dict):
+    backup(conf)
+    st = conf.stat()
+    conf.write_text(json.dumps(c, indent=2) + "\n")
+    os.chown(conf, st.st_uid, st.st_gid)
+    os.chmod(conf, st.st_mode & 0o777)
 
 
 def skills(conf: Path, add: bool):
@@ -151,12 +196,8 @@ def skills(conf: Path, add: bool):
     want = ([s for s in have if s != "hive"] + ["hive"]) if add else [s for s in have if s != "hive"]
     if want == have:
         return
-    backup(conf)
-    st = conf.stat()
     d["skills"] = want
-    conf.write_text(json.dumps(c, indent=2) + "\n")
-    os.chown(conf, st.st_uid, st.st_gid)
-    os.chmod(conf, st.st_mode & 0o777)
+    write_config(conf, c)
     print(f"{'added' if add else 'removed'} skill hive {'to' if add else 'from'} agents.defaults.skills in {conf}")
 
 
@@ -172,6 +213,8 @@ def main():
         o.add_argument(x, required=True)
     o.add_argument("--home")
     o.add_argument("--map", action="append")
+    o.add_argument("--hook-token-file")
+    o.add_argument("--agent", default="main")
     o.add_argument("--undo", action="store_true")
     a = ap.parse_args()
     if os.geteuid() != 0:
