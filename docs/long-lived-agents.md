@@ -1,0 +1,58 @@
+# Putting long-lived agents on the hive
+
+For a hive whose agents already run all the time (chat bots with their own memory, often self-modifying) rather than being launched per task. The agents keep running and keep their memory; the record takes over formal work: who is assigned what, results pinned, every result reviewed before close. The first hive adopted this way is the proto-hive (2026-10-22: five bots, two machines, switched without restarting any bot).
+
+This complements One Hive's interfaces: the runtime launches and delivers, and doesn't prescribe the agent's cognition. A long-lived agent and a bounded worker share the same record contract; only how work reaches them differs.
+
+## The shape
+
+- **The record** (hive-record) and its gateway, one per hive. The `proto-hive` profile suits chat bots: no goals and no human approvals, the order carries its goal, criteria and a "useless if" line; leases, supervision and cost stay.
+- **A chief of staff** (`cos.sh`, role doc `docs/chief-of-staff-proto-hive.md`), reached through a chat work group by hive-bridge. It is the only way work is assigned.
+- **A sidecar per agent** (`adapters/iter/sidecar.py`): holds the agent's record key, does the record and git work, and talks to the agent only through a queue folder. The agent never holds its key.
+- **A reviewer** with its own key and a different model from the workers (`adapters/reviewer/reviewer_runner.py`).
+- **The dispatcher and supervisor** in long-lived mode (`HIVE_LONG_LIVED_ACTORS`, `HIVE_REVIEWERS`): reviews assigned automatically; nudges delivered as messages, then escalation to the chief of staff; never a restart.
+
+## How work reaches each kind of agent
+
+Work reaches an agent through its own runtime, never through chat: telling a bot it has a task is a control signal, not conversation ("runtime is not speech").
+
+| Agent | How it hears | Set up with |
+|---|---|---|
+| Iter | Iter checks its channels every cycle; the hive channel reads the sidecar's queue | `install-agent.py iter --folder F` (channel, tool, prompt rule) |
+| OpenClaw | the sidecar starts a turn of the agent with each message through the gateway's inbound webhook (`/hooks/agent`, a token of its own, one agent only, nothing posted to chat) | `install-agent.py openclaw … --hook-token-file F`, a gateway restart, and the sidecar's `"deliver": [<python>, "adapters/openclaw/hook-deliver.py", "--url", "http://127.0.0.1:<port>/hooks/agent", "--token-file", F, "--agent", "main", "{text}"]` |
+| Anything with a shell but no way to start a turn | it runs `hive-task inbox` itself (a heartbeat or a scheduled job) | `hive-task` in sidecar mode; a fallback: it costs a turn each time, and a disabled heartbeat leaves work unseen |
+
+If the gateway listens only on loopback inside a container and the sidecar runs on the host, the sidecar can't reach it directly. Either open the gateway to the container network (tokens still apply) or give the sidecar a narrow root helper that enters only that gateway's network namespace to make the one call (the proto-hive does the latter, through one sudo rule per bot).
+
+Each install is idempotent, backs up every file it changes as `.pre-hive`, and is reversed with `--undo`. Agents in containers: `--map HOST=AGENT` translates paths written for the agent.
+
+## Keys when agents share an OS user
+
+The record's SPEC §6.6 asks that no two agents share a process, container, filesystem, OS user or key. Where the existing setup can't give that yet:
+
+- **Keep keys apart anyway.** Run each sidecar under its own OS user, with its key readable only there. Share only the queue folder with the agent (ACLs work well: they grant exactly that user exactly that folder, without loosening anything else).
+- **The sidecar only reads the agent's clones.** It never fetches or writes into them (it checks that a result was pushed with `git ls-remote`), so it can run as another user without leaving files the agent can't use.
+- **Keep the reviewer out of the workers' reach.** Its model, prompt and tools must not live in a configuration the workers can edit, or a worker can shape its own review.
+- **Declare the deviation.** Each actor's declaration says how its sandbox is shared, and the adoption note says plainly that the deployment doesn't conform: on such a machine, an event signed by an agent's key proves only that some process there asked that agent's sidecar.
+
+## Self-modifying agents
+
+Agents may change their own code; the sidecar re-declares the agent on the record when its code changes (`declare_seconds`, default 600): the folder's commit, a hash of uncommitted code, the hive adapter it holds, and any `declare_files` (for instance a memory system's switches). Changing another agent's code is a task through the chief of staff. The hive's own machinery (the shared repositories, the deployment, the adapters, the reviewer, the chief of staff) stays off limits to every agent.
+
+## Code repositories
+
+- Register every repository the agents may work in (the proto-hive registers all of one account's repositories; ids must be lower case).
+- **After any change to the registry, an operator records it** (`hive emit hive.registry_changed` with the new digest, OPERATOR_GUIDE "Changing the registry"); until then the gateway refuses every pin.
+- The sidecar finds the agent's clone of a repository by its remote (`repo_search`), so its config needn't list them.
+- If agents can push to `main` (they act as the account that owns the repositories), make "branch, pull request, a human merges" their rule and run `main-watch.py`, which reports any commit reaching a default branch without a passed review.
+
+## Chat stays open
+
+The agents keep talking to people and to each other. Substantive work asked in chat is filed by the agent itself, through the chief of staff (the rule `install-agent.py` adds to the agent's prompt, `adapters/hive-rule.txt`); small things are just answered. The record holds formal work; the bridge's dialogue log holds the conversation.
+
+## Pitfalls met on the way
+
+- Python installed by `uv` under root's home: other users can't run it. Set `UV_PYTHON_INSTALL_DIR` under the shared install folder.
+- A config file rewritten as root (a token, a group list) stops a service that runs as another user.
+- Long lines pasted into a terminal can break in two; prefer scripts and short lines.
+- A reviewer that can't run leads to escalations; the supervisor waits a full window after each one (v0.4.14), so they don't repeat every pass.

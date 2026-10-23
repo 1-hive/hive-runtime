@@ -11,8 +11,10 @@
 
 Config: $HIVE_TASK_CONFIG, else ~/.hive/config.json (the same file as the Iter adapter's, README.md).
 Synchronous: it does the record and git work itself and prints the outcome, so an agent with a shell
-needs no daemon. Pair it with a sidecar whose "deliver" command pushes new tasks into the agent, or
-run `hive-task inbox` from a heartbeat.
+needs no daemon. An OpenClaw agent doesn't look by itself: pair it with a sidecar whose "deliver" command
+starts a turn of the agent with each message (hook-deliver.py, through the gateway's own webhook; never
+through chat). A heartbeat that runs `hive-task inbox` is only a fallback: it costs a model turn each time,
+and a disabled heartbeat silently leaves work unseen.
 
 Sidecar mode, for an agent that mustn't hold its record key or has no git (config:
 {"daemon": "sidecar", "root": "<the queue folder>"}): it only queues the action for a sidecar
