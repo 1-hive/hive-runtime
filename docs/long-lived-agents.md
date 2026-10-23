@@ -53,6 +53,7 @@ The agents keep talking to people and to each other. Substantive work asked in c
 ## Pitfalls met on the way
 
 - Python installed by `uv` under root's home: other users can't run it. Set `UV_PYTHON_INSTALL_DIR` under the shared install folder.
+- An agent on another machine than the record pins its reports in the workspace, and the pin check looks for the commit at the registry's address for it, which may be a path on the record's host. Point that address at the agent's real route with git (`url.<ssh address>.insteadOf <file:// address>`, per user), as the chief of staff does; otherwise every report fails with `REMOTE_UNAVAILABLE`.
 - A config file rewritten as root (a token, a group list) stops a service that runs as another user.
 - Long lines pasted into a terminal can break in two; prefer scripts and short lines.
 - A reviewer that can't run leads to escalations; the supervisor waits a full window after each one (v0.4.14), so they don't repeat every pass.
