@@ -564,7 +564,10 @@ def _outer_channel(d, since):
             src = json.loads((d / "processing" / n).read_text()).get("source") or {}
             reqs.append({"chat_id": int(src["chat_id"]), "message_id": int(src["message_id"]),
                          "since": _stamp(d / "processing" / n)})
-        except (OSError, ValueError, KeyError, TypeError):
+        except OSError:
+            # a request in progress that this user can't read (a sidecar under another user): only that it is there
+            reqs.append({"chat_id": None, "message_id": None, "since": _stamp(d / "processing" / n)})
+        except (ValueError, KeyError, TypeError):
             continue
     done = sorted(t for t in (_stamp(d / "completed" / n) for n in names["completed"]) if t)
     return {"requests": reqs, "queued": len(names["inbox"]), "last_answer": done[-1] if done else None,

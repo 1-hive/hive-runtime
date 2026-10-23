@@ -109,6 +109,15 @@ def main():
     # the ctime of a file just written is now, whatever its mtime: completed answers count from when they moved in
     assert len(b["answers"]) == 2 and b["last_answer"] == b["answers"][-1]
     assert abs(b["last_step"] - (now - 42)) < 1 or b["last_step"] >= now - 42
+    # a request this user can't read (a sidecar under another user than the agent's): there, but no ids
+    if os.geteuid() != 0:
+        locked = ch / "processing" / "locked.json"
+        locked.write_text("{}")
+        locked.chmod(0)
+        rq = mod.beacon_body(conf, root, now - 500)["requests"]
+        locked.chmod(0o600)
+        locked.unlink()
+        assert {"chat_id": None, "message_id": None} in [{k: r[k] for k in ("chat_id", "message_id")} for r in rq], rq
     eps = b["episodes"]
     assert [e[2] for e in eps] == ["claude-opus-5-5", "claude-sonnet-5-5"], eps
     assert eps[0][1] is not None and eps[1][1] is None and eps[0][0] < eps[1][0]
