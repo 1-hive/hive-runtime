@@ -37,6 +37,8 @@ The record's SPEC §6.6 asks that no two agents share a process, container, file
 
 ## Self-modifying agents
 
+Run `adapters/iter/conformance.py --folder F` on an Iter agent after installing the adapter and whenever its Iter changes (an upgrade, a merge, its own edits): it checks the adapter still works under that agent's own loader and limits, without touching its queue.
+
 Agents may change their own code; the sidecar re-declares the agent on the record when its code changes (`declare_seconds`, default 600): the folder's commit, a hash of uncommitted code, the hive adapter it holds, and any `declare_files` (for instance a memory system's switches). Changing another agent's code is a task through the chief of staff. The hive's own machinery (the shared repositories, the deployment, the adapters, the reviewer, the chief of staff) stays off limits to every agent.
 
 ## Code repositories

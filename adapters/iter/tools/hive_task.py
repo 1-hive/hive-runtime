@@ -3,12 +3,12 @@ import os
 import time
 from pathlib import Path
 
-DESCRIPTION = ("Act on a task from the hive record (the hive channel tells you about them). action: accept (when you "
-               "start), progress or checkpoint (text = what's done and what's next), block (text = your question; "
-               "extra = decision, information, access or external), unblock (after your question was answered), "
-               "result (text = the result report; push your code first), or review (a task you were asked to review; "
-               "text = findings, extra = passed, failed or needs_information). task = the task id (may be empty for "
-               "your only open task). The outcome arrives on the hive channel within a minute.")
+DESCRIPTION = ("Act on a hive record task (the hive channel tells you of them). action: accept (when you start), "
+               "progress or checkpoint (text = done and next), block (text = your question; extra = decision, "
+               "information, access or external), unblock (once answered), result (text = the report; push code "
+               "first), review (a task you review; text = findings; extra = passed, failed or needs_information). "
+               "task = the task id (empty: your only open task). The outcome comes on the hive channel within a "
+               "minute.")
 
 ACTIONS = ("accept", "progress", "checkpoint", "block", "unblock", "result", "review")
 

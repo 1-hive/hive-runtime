@@ -73,6 +73,18 @@ State lives in `.runtime/hive/` in the agent's folder: the queues, the last stat
 
 To turn them on in an existing config: `adapters/set-beacon.py <config.json> --url https://<floor>/api/beacon [--iter-channel DIR] [--openclaw-sessions DIR]` (keeps the file's owner and mode; `--off` removes them), then restart the sidecar or runner.
 
+## Conformance: does a given Iter work with the adapter?
+
+Iter agents differ (forks, self-modification), and the adapter must keep working under each. `conformance.py` checks one agent's folder the way that agent calls the adapter: through its own `iter.py --invoke` worker, under its own timeouts and tool limit, in a scratch copy (sidecar mode, so the agent's live queue and the record are never touched).
+
+```
+python adapters/iter/conformance.py --folder <the agent's Iter folder> --python <the agent's interpreter> [--prompt FILE] [--json]
+```
+
+It checks that the channel, tool and config are installed; that Iter loads `hive_task` (it loads only the first `MAX_TOOLS` tools, by name) and reads its parameters and whole description; that a queued message comes out of `receive()` once and the tool queues an action, both within Iter's limits; that Iter's channel probe (request binding) answers for the hive channel; whether the agent's own `send` tool reaches the hive channel, unbound and while a chat request is bound to the turn; whether the installed files are this adapter's; and that the hive rule is in the prompt. `FAIL` breaks hive work (exit 1); `WARN` works with a limit worth knowing. Run it after installing, after an Iter upgrade or merge, and from time to time on agents that modify themselves. Test: `tests/iter_conformance_test.py`.
+
+First run (2026-10-23) on the three Iter variants of the proto-hive (ProtoCosmo2's lineage from GitHub, Protomega's and Protomega2's from vm2): no failures. It found `hive_task`'s description cut at Iter's 500 characters (fixed in v0.5.10) and that VM2's `send` tool refuses the hive channel while a turn is bound to a chat request (`hive_task` progress still works), and noted both vm2 bots carry an older `channels/hive.py`.
+
 ## Test
 
 `tests/iter_adapter_e2e.py` runs a worker and a reviewer on a scratch record, the way `iter.py` calls channels and tools (a new process per call, from the agent's folder). The worker runs in sidecar mode and the reviewer in spawned mode. The task goes through:
