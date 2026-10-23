@@ -426,6 +426,9 @@ def poll(h):
         tid, prev, now = t["id"], seen.get(t["id"], {}), {}
         if t.get("owner") == h.actor:
             now["status"] = t["status"]
+            if t["status"] in ("done", "cancelled") and prev.get("status") not in (None, "done", "cancelled"):
+                why = "closed after a passed review" if t["status"] == "done" else "cancelled"
+                tell(f"Task {tid} ({t.get('title', '')}) is {why}: nothing more to do on it.")
             if t["status"] == "assigned" and prev.get("status") != "assigned":
                 tell(f"New task {tid} for you: {t.get('title', '')}\nOrder: {h.read_pin(t.get('order'))}\n\n"
                      f"Accept it with hive_task(action='accept', task='{tid}', text='', extra='') when you start.")

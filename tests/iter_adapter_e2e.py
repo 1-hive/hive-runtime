@@ -280,6 +280,7 @@ def main():
         rv1.tool("review", "t1", "Line and test are there.", "passed")
         rv1.wait_for("OK: review of t1: passed")
         hive("cos", "emit", "task.closed", "--task", "t1")
+        w1.wait_for("Task t1 (Add a line) is closed after a passed review")
         t = json.loads(hive("cos", "task", "t1"))["task"]
         assert t["status"] == "done", t["status"]
         types = [json.loads(l)["type"] for l in hive("cos", "events").splitlines() if l.strip()]
