@@ -2,10 +2,11 @@
 """Flag commits that reach a repository's main branch without a passed review on the record.
 
     main-watch.py [--say CMD] NAME=BARE_CLONE[:BRANCH] ...
-    main-watch.py [--say CMD] --registry REGISTRY.json --under DIR
+    main-watch.py [--say CMD] --registry REGISTRY.json --under DIR [--also NAME:BRANCH ...]
 
 The second form watches every repository in a hivepin registry whose local_path (a bare clone) is under
-DIR, on its default branch (the clone's HEAD).
+DIR, on its default branch (the clone's HEAD), and with --also another branch of one of them as well
+(e.g. --also iter:protomega, a line that agents track besides the default branch).
 
 Where agents could push to main but by agreement don't (they push a branch, open a pull request, and a
 human merges it), this is the check after the fact instead of a block. Each run fetches each bare clone
@@ -83,6 +84,8 @@ def main() -> None:
     ap.add_argument("--say", help="command that sends an alert, given as its last argument")
     ap.add_argument("--registry", help="watch the registry's repositories whose local_path is under --under")
     ap.add_argument("--under", help="with --registry: the folder of the bare clones")
+    ap.add_argument("--also", action="append", default=[], metavar="NAME:BRANCH",
+                    help="with --registry: watch this branch of that repository too (repeatable)")
     ap.add_argument("repos", nargs="*", metavar="NAME=BARE_CLONE[:BRANCH]")
     a = ap.parse_args()
     if a.registry:
@@ -92,6 +95,9 @@ def main() -> None:
             if under in path.parents and (path / "HEAD").is_file():
                 head = git(str(path), "symbolic-ref", "--short", "HEAD", check=False) or "main"
                 a.repos.append(f"{name}={path}:{head}")
+                for extra in a.also:
+                    if extra.partition(":")[0] == name and extra.partition(":")[2]:
+                        a.repos.append(f"{name}={path}:{extra.partition(':')[2]}")
     if not a.repos:
         ap.error("no repositories to watch")
     state = json.loads(STATE.read_text()) if STATE.is_file() else {}

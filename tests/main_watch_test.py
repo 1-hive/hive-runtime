@@ -83,7 +83,18 @@ def main():
     with contextlib.redirect_stdout(buf):
         mw.main()
     assert "app: 1 commit(s) reached main" in buf.getvalue(), buf.getvalue()
-    print("PASSED: first run silent; merge commit and fast-forward of reviewed results pass; a direct commit and a rewrite are flagged; the registry form finds the clone and its branch")
+    # --also: another branch of a registered repository (a line agents track besides main)
+    sh("git", "push", "-q", "origin", "HEAD:line", cwd=work)
+    sys.argv = ["main-watch.py", "--registry", str(reg), "--under", str(tmp), "--also", "app:line", "--also", "nope:x"]
+    with contextlib.redirect_stdout(io.StringIO()):
+        mw.main()                                          # first sight of app:line: only recorded
+    commit("straight onto the line")
+    sh("git", "push", "-q", "origin", "HEAD:line", cwd=work)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mw.main()
+    assert "app: 1 commit(s) reached line" in buf.getvalue() and "reached main" not in buf.getvalue(), buf.getvalue()
+    print("PASSED: first run silent; merge commit and fast-forward of reviewed results pass; a direct commit and a rewrite are flagged; the registry form finds the clone and its branch, and --also watches another branch")
 
 
 if __name__ == "__main__":
