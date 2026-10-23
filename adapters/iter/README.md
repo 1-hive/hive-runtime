@@ -52,6 +52,23 @@ Iter gives a channel or tool call 5 seconds. So the channel and the tool only qu
 - **Declaration** (`declare_seconds`, default 600; 0 turns it off): the agent's code may change under it (Iter agents modify themselves), and the record's SPEC §6.2 asks agents to re-declare when it does. Every `declare_seconds` the daemon computes the agent's code state, and if it changed, emits `actor.declared` with it in the declaration's `harness` line (model and sandbox stay as declared): `iter <branch>@<commit>[+<hash of uncommitted changes>]; hive adapter <hash>[; <name> <hash>…]`. Uncommitted changes are tracked files' changes plus untracked code files (`.py`, `.metta`, `.sh`, `.js`, `.ts`) in the agent's folder, minus `.runtime/`, `.hive/` and `declare_exclude`. `declare_files` ({name: path in the agent's folder}) adds a hash of each such file, e.g. a memory system's flags. `harness` sets the first word (default `iter`); a daemon whose folder holds no `channels/hive.py` (hive-task's queue folder) declares nothing unless it is set.
 - **Registry:** the daemon writes its own copy of the hive's registry, pointing each repository's `local_path` at the agent's clones, so pins resolve the agent's commits.
 
+## Beacons: what the agent is doing now
+
+With `"beacon": {"url": ...}` in its config, the daemon (and the reviewer runner, `adapters/reviewer/`) posts a beacon to that URL every `every` seconds (default 30), on a thread of its own, so a slow delivery never stops it: the hive's Floor (hive-bridge) shows from these what each agent is doing, and an agent whose beacons stop as offline. A beacon is built from the agent's own files only, is never authoritative, and **never carries the text of a prompt, a message or a reply**: only times, counts, model names and chat and message ids.
+
+| Config key (under `beacon`) | What it adds to the beacon |
+|---|---|
+| `url` | where to post (required; without it, no beacons) |
+| `every` | seconds between beacons (default 30) |
+| `iter_channel` | an Iter outer channel folder (`inbox/`, `processing/`, `completed/`): `requests` (each claimed request's `chat_id`, `message_id` and since when), `queued` (waiting in `inbox/`), `last_answer` and `answers` (completed in the last 24 h) |
+| `route_hook` | the hive-route hook log (default `route-hook.jsonl` in the agent's folder, if it exists): `episodes`, `[start, end or null, model]` for the last 24 h |
+| `watch` | files whose last change is `last_step` (an Iter agent's `experience.json` is always watched) |
+| `openclaw_sessions` | an OpenClaw agent's sessions folder: `last_step` (the newest transcript) and `chat` (the chat of the session updated last, from `sessions.json`'s keys) |
+
+Always: `v` (1), `actor`, `kind` (`iter`, `openclaw`, `reviewer` or `agent`), `at`, `started`, `problem` (e.g. a folder it can't read, or the reviewer's last failed run), and `pending_actions` (the agent's actions waiting in the queue). The reviewer runner adds `reviewing` (`{task, since}` while a review runs). Times are Unix seconds; a file's time is its last change (mtime or ctime, whichever is later, so a request counts from when it was claimed).
+
+**Signed** with the agent's record key, the way the record signs writes but under another prefix, so a beacon can never be replayed as a record write: the body is canonical JSON (sorted keys, no spaces), and the headers are `X-Hive-Key` (the public key), `X-Hive-Signed-At` (UTC, `YYYY-MM-DDTHH:MM:SSZ`) and `X-Hive-Signature`, the ed25519 signature of `hive-beacon1\n<hive id>\n<signed at>\n<sha256 hex of the body>`. The receiver checks the key belongs to an active actor and the time is recent. Test: `tests/beacon_test.py`.
+
 State lives in `.runtime/hive/` in the agent's folder: the queues, the last state seen, minted pins, and a log (`log.txt`).
 
 ## Test

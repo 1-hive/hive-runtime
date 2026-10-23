@@ -16,7 +16,9 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
@@ -103,8 +105,25 @@ class Agent:
             pass
 
 
+BEACONS: list[dict] = []
+
+
+class Beacons(BaseHTTPRequestHandler):
+    """Stands in for the Floor: keeps each beacon's body."""
+    def do_POST(self):
+        BEACONS.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="iter-e2e-"))
+    floor = ThreadingHTTPServer(("127.0.0.1", 0), Beacons)
+    threading.Thread(target=floor.serve_forever, daemon=True).start()
+    beacon = {"url": f"http://127.0.0.1:{floor.server_address[1]}/api/beacon", "every": 1}
     fx = FixtureRepo()
     pg = scratch.up()
     agents: list[Agent] = []
@@ -198,7 +217,7 @@ def main():
                     "repos": repos, "poll_seconds": 2}
         code = tmp / "w1-code"
         sh("git", "clone", "-q", str(tmp / "code.git"), str(code), env=gitenv)
-        w1 = Agent(tmp / "iter-w1", "w1", {**conf("w1", {"code": str(code)}), "declare_seconds": 2,
+        w1 = Agent(tmp / "iter-w1", "w1", {**conf("w1", {"code": str(code)}), "declare_seconds": 2, "beacon": beacon,
                                           "declare_files": {"flags": "memory/flags.json"}}, sidecar=True)   # as on vm2
         rv1 = Agent(tmp / "iter-rv1", "rv1", conf("rv1", {}))
         agents += [w1, rv1]
@@ -326,7 +345,7 @@ def main():
                         "print('base..code named:', 'base ' in k)\nprint('VERDICT: passed')\n")
         rconf = {**conf("rv1-runner-" + "x", {}), "actor": "rv1", "key_file": str(tmp / "rv1.key"),
                  "root": str(tmp / "rv1-runner"), "review_cmd": [sys.executable, str(fake), "{kickoff}"],
-                 "poll_seconds": 2}
+                 "poll_seconds": 2, "beacon": beacon}
         (tmp / "rv1-runner").mkdir()
         (tmp / "rv1-runner-config.json").write_text(json.dumps(rconf))
         runner = subprocess.Popen([sys.executable, str(ADAPTER.parent / "reviewer" / "reviewer_runner.py"),
@@ -377,6 +396,9 @@ def main():
         time.sleep(5)
         assert harness() == h3, (h3, harness())
         print("  self-modification: re-declared on commit, uncommitted code and a flags file; not on other files")
+        kinds = {(b["actor"], b["kind"]) for b in BEACONS}
+        assert {("w1", "iter"), ("rv1", "reviewer")} <= kinds, kinds
+        print(f"  beacons: {len(BEACONS)} from the sidecar (iter) and the reviewer runner (reviewer)")
         print("PASSED (t1: worker in sidecar mode, reviewer in spawn mode; t2: hive-task CLI and the reviewer runner): assigned, accepted, progress (tool and send), nudged, blocked, answered, unblocked, result refused "
               "until pushed, result with code+base pins, review failed, new result, review passed, closed")
     finally:

@@ -16,6 +16,11 @@ It watches the record for results assigned to this reviewer that it hasn't judge
 from its output: the last line that reads `VERDICT: passed|failed|needs_information`. The output is
 the review report, committed to the workspace and recorded as review.recorded, citing the result (A5).
 A run that gives no verdict is retried later; nothing is recorded for it.
+
+With "beacon": {"url": ...} in the config (adapters/iter/README.md, Beacons), it posts a signed beacon of
+kind "reviewer" every 30 s: "reviewing" (the task and since when) while a review command runs, and
+"problem" after a run that timed out, couldn't start or gave no verdict (the output's last line,
+cut to 200 characters), cleared by the next run that gives one.
 """
 import importlib.util
 import json
@@ -95,6 +100,8 @@ def main():
     h = mod.Hive(c)
     every, timeout, retry = int(c.get("poll_seconds", 30)), int(c.get("timeout_seconds", 5400)), int(c.get("retry_seconds", 900))
     tried = {}   # result event -> when last tried without a verdict
+    doing = {"reviewing": None, "problem": None}   # for the beacon
+    mod.start_beacon(c, kind="reviewer", extra=lambda: dict(doing))
     mod.log(f"reviewer runner up as {h.actor}")
     while True:
         try:
@@ -111,16 +118,26 @@ def main():
                 kf.write_text(kickoff(h, t))
                 cmd = [kf.read_text() if a == "{text}" else str(kf) if a == "{kickoff}" else a for a in c["review_cmd"]]
                 mod.log(f"reviewing {t['id']} ({cr['event_id'][:8]})")
+                doing["reviewing"] = {"task": t["id"], "since": time.time()}
                 try:
                     r = subprocess.run(cmd, cwd=h.ws["clone"], capture_output=True, text=True, timeout=timeout)
                     out = (r.stdout or "") + (("\n" + r.stderr) if r.returncode else "")
                 except subprocess.TimeoutExpired:
                     mod.log(f"review of {t['id']} timed out after {timeout}s")
+                    doing.update(reviewing=None, problem=f"the review of {t['id']} timed out after {timeout} s")
                     continue
+                except OSError as e:
+                    mod.log(f"review of {t['id']}: can't run {cmd[0]}: {e}")
+                    doing.update(reviewing=None, problem=f"can't run the review command: {e}"[:200])
+                    continue
+                doing["reviewing"] = None
                 m = VERDICT.findall(out)
                 if not m:
                     mod.log(f"review of {t['id']}: no verdict in the output (rc {r.returncode}); retry in {retry}s")
+                    last = next((x.strip() for x in reversed(out.splitlines()) if x.strip()), "no output")
+                    doing["problem"] = f"no verdict from the review of {t['id']} (rc {r.returncode}): {last}"[:200]
                     continue
+                doing["problem"] = None
                 verdict = m[-1].lower()
                 try:
                     mod.log("recorded: " + mod.do(h, {"action": "review", "task": t["id"], "text": out.strip(), "extra": verdict}))

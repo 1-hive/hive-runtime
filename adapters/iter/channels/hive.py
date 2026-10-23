@@ -16,12 +16,15 @@ Install: copy this file to the agent's channels/ and tools/hive_task.py to its t
   .hive/config.json holds only {"daemon": "sidecar"}, and the sidecar gets the real config.
 """
 import datetime
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from pathlib import Path
 
 MAX_TEXT = 6000                                      # of an order, answer or review, per message
@@ -494,6 +497,188 @@ def declare(h):
     log(f"declared: {harness}")
 
 
+# ---------------------------------------------------------------- beacons -----------------------
+# What the agent is doing now, from its own files, posted to the hive's Floor every few seconds (config
+# "beacon"): never authoritative, and never the text of a prompt or message. Signed with the agent's record
+# key under the prefix "hive-beacon1", which the record never accepts, so a beacon can't be replayed as a write.
+
+DAY = 86400
+TAIL_BYTES = 2_000_000                               # of a route hook log, read per beacon
+SESSION_CHAT = re.compile(r"(?:group|channel|direct|dm):(-?\d+)")
+
+
+def _stamp(p):
+    """When a file last changed: its mtime, or its ctime if later (a rename into processing/ or completed/
+    keeps the mtime of arrival but sets the ctime)."""
+    try:
+        st = os.stat(p)
+        return max(st.st_mtime, st.st_ctime)
+    except OSError:
+        return None
+
+
+def _epoch(s):
+    return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+
+
+def _episodes(hook, since):
+    """[start, end or None, model] per route-hook episode ending (or, if open, starting) after `since`,
+    oldest first: a "routed" line paired with the later "ended" of the same episode (as time_split.py)."""
+    size = hook.stat().st_size
+    with hook.open("rb") as f:
+        f.seek(max(0, size - TAIL_BYTES))
+        lines = f.read().decode(errors="replace").splitlines()
+    if size > TAIL_BYTES:
+        lines = lines[1:]                            # the first line of a tail is cut
+    open_, out = {}, []
+    for line in lines:
+        try:
+            e = json.loads(line)
+            ep, at = e.get("episode"), _epoch(e["at"])
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if not ep:
+            continue
+        if e.get("event") == "routed":
+            open_[ep] = [at, None, e.get("model")]
+        elif e.get("event") == "ended" and ep in open_:
+            r = open_.pop(ep)
+            r[1] = at
+            out.append(r)
+    out = sorted([r for r in out + list(open_.values()) if (r[1] or r[0]) >= since], key=lambda r: r[0])
+    return out[-200:]
+
+
+def _outer_channel(d, since):
+    """An Iter outer channel (inbox/, processing/, completed/): only each claimed request's chat and message
+    ids, never its prompt."""
+    names = {}
+    for sub in ("processing", "inbox", "completed"):
+        try:
+            names[sub] = [n for n in os.listdir(d / sub) if n.endswith(".json")]
+        except OSError as e:
+            return {"problem": f"can't read {d / sub}: {e.strerror or e}"}
+    reqs = []
+    for n in sorted(names["processing"]):
+        try:
+            src = json.loads((d / "processing" / n).read_text()).get("source") or {}
+            reqs.append({"chat_id": int(src["chat_id"]), "message_id": int(src["message_id"]),
+                         "since": _stamp(d / "processing" / n)})
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    done = sorted(t for t in (_stamp(d / "completed" / n) for n in names["completed"]) if t)
+    return {"requests": reqs, "queued": len(names["inbox"]), "last_answer": done[-1] if done else None,
+            "answers": [t for t in done if t >= since][-300:]}
+
+
+def _openclaw(d):
+    """An OpenClaw agent's sessions folder: the newest transcript's time, and the chat of the session
+    updated last (from sessions.json's keys, e.g. agent:main:telegram:group:-100…), if it says."""
+    try:
+        files = [(t, n) for n in os.listdir(d) if n.endswith(".jsonl") for t in [_stamp(d / n)] if t]
+    except OSError as e:
+        return {"problem": f"can't read {d}: {e.strerror or e}"}
+    out = {"last_step": max(files)[0] if files else None}
+    try:
+        sessions = json.loads((d / "sessions.json").read_text())
+        newest = Path(max(files)[1]).stem if files else None
+
+        def rank(kv):
+            v = kv[1] if isinstance(kv[1], dict) else {}
+            hit = newest and newest in (str(v.get("sessionId")), Path(str(v.get("sessionFile") or "")).stem)
+            return (bool(hit), float(v.get("updatedAt") or 0))
+        key = max(sessions.items(), key=rank)[0]
+        m = SESSION_CHAT.search(key)
+        if m:
+            out["chat"] = {"chat_id": int(m.group(1))}
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return out
+
+
+def beacon_body(conf, root, started, kind=None, extra=None):
+    """The beacon (v 1) for the agent whose folder is `root`, from its files alone (no record needed)."""
+    b, root, now = conf.get("beacon") or {}, Path(root), time.time()
+    since = now - DAY
+    kind = kind or ("iter" if (root / "channels" / "hive.py").is_file()
+                    else "openclaw" if b.get("openclaw_sessions") else "agent")
+    body = {"v": 1, "actor": conf["actor"], "kind": kind, "at": now, "started": started, "problem": None}
+    problems = []
+    watch = [Path(p) for p in b.get("watch", [])]
+    if kind == "iter" and (root / "experience.json").exists():
+        watch.insert(0, root / "experience.json")
+    steps = list(map(_stamp, watch))
+    hook = Path(b["route_hook"]) if b.get("route_hook") else root / "route-hook.jsonl"
+    if b.get("route_hook") or hook.is_file():
+        try:
+            body["episodes"] = _episodes(hook, since)
+        except OSError as e:
+            problems.append(f"can't read {hook}: {e.strerror or e}")
+    for key, read in (("iter_channel", lambda d: _outer_channel(d, since)), ("openclaw_sessions", _openclaw)):
+        if b.get(key):
+            got = read(Path(b[key]))
+            problems.append(got.pop("problem", None))
+            steps.append(got.pop("last_step", None))
+            body.update(got)
+    steps = [t for t in steps if t]
+    if watch or b.get("openclaw_sessions"):
+        body["last_step"] = max(steps) if steps else None
+    if OUTBOX.is_dir():
+        body["pending_actions"] = len(list(OUTBOX.glob("[0-9]*")))
+    extra = dict(extra or {})
+    problems.insert(0, extra.pop("problem", None))
+    body.update(extra)
+    body["problem"] = "; ".join(p for p in problems if p)[:200] or None
+    return body
+
+
+def beacon_send(conf, body, key=None):
+    """POST a signed beacon to config's beacon.url; returns the HTTP status."""
+    if key is None:
+        from hiverecord.keys import SigningKey
+        key = SigningKey.from_file(conf["key_file"])
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    sig = key.sign(f"hive-beacon1\n{conf['hive_id']}\n{at}\n{hashlib.sha256(raw).hexdigest()}".encode())
+    req = urllib.request.Request(conf["beacon"]["url"], data=raw, method="POST", headers={
+        "Content-Type": "application/json", "X-Hive-Key": key.public, "X-Hive-Signed-At": at, "X-Hive-Signature": sig})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.status
+
+
+def beacon_loop(conf, kind=None, extra=None):
+    """Send a beacon every beacon.every seconds (default 30), for as long as the daemon runs. `extra` is
+    a function giving fields to add (the reviewer runner's "reviewing" and "problem")."""
+    try:
+        from hiverecord.keys import SigningKey
+        key = SigningKey.from_file(conf["key_file"])
+    except (ImportError, OSError, ValueError, KeyError) as e:
+        log(f"beacons off: {type(e).__name__}: {e}")
+        return
+    every, started, noted, failing = int(conf["beacon"].get("every", 30)), time.time(), 0.0, False
+    while True:
+        try:
+            beacon_send(conf, beacon_body(conf, ROOT, started, kind, extra() if extra else None), key)
+            if failing:
+                log("beacons: sending again")
+            failing = False
+        except Exception as e:   # the Floor may be down or restarting: keep trying, log rarely
+            failing = True
+            if time.time() - noted >= 600:
+                log(f"beacon failed: {type(e).__name__}: {e}")
+                noted = time.time()
+        time.sleep(every)
+
+
+def start_beacon(conf, kind=None, extra=None):
+    """A daemon thread for beacons, if config has a beacon.url: deliveries can block the main loop for minutes."""
+    if not (conf.get("beacon") or {}).get("url"):
+        return None
+    t = threading.Thread(target=beacon_loop, args=(conf, kind, extra), daemon=True, name="beacon")
+    t.start()
+    return t
+
+
 def daemon():
     global DELIVER
     _dirs()
@@ -504,6 +689,7 @@ def daemon():
         tell(f"hive channel can't start: {e}. Fix {CONF}.")
         log(f"can't start: {e}")
         return
+    start_beacon(h.c)
     DELIVER = h.c.get("deliver") or None             # e.g. ["openclaw", "agent", "exec", "--agent", "main", "--message", "{text}"]
     every = int(h.c.get("poll_seconds", 30))
     declare_every = int(h.c.get("declare_seconds", 600))   # 0: never
