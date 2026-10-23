@@ -71,6 +71,8 @@ Always: `v` (1), `actor`, `kind` (`iter`, `openclaw`, `reviewer` or `agent`), `a
 
 State lives in `.runtime/hive/` in the agent's folder: the queues, the last state seen, minted pins, and a log (`log.txt`).
 
+To turn them on in an existing config: `adapters/set-beacon.py <config.json> --url https://<floor>/api/beacon [--iter-channel DIR] [--openclaw-sessions DIR]` (keeps the file's owner and mode; `--off` removes them), then restart the sidecar or runner.
+
 ## Test
 
 `tests/iter_adapter_e2e.py` runs a worker and a reviewer on a scratch record, the way `iter.py` calls channels and tools (a new process per call, from the agent's folder). The worker runs in sidecar mode and the reviewer in spawned mode. The task goes through:
