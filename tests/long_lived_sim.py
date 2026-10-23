@@ -3,7 +3,8 @@
     HIVE_LONG_LIVED_ACTORS='worker.*,reviewer.astra' python3 tests/long_lived_sim.py
 
 Checks: no launch and no restart for long-lived actors; nudge, nudge, escalate; a review assigned
-but not recorded within the wait is escalated; a review is assigned once (never re-assigned).
+but not recorded within the wait is escalated, and after an escalation or its resolution only again a full
+window later; a review is assigned once (never re-assigned).
 """
 import importlib.util, json, os, sys, tempfile, time
 from pathlib import Path
@@ -61,6 +62,16 @@ EVENTS["t2"] = [{"type": "review.assigned", "recorded_at": iso(NOW - 3600), "dat
 emitted.clear(); sup.supervise(r, NOW, False); check("review waiting under the limit: nothing", not emitted, emitted)
 EVENTS["t2"][0]["recorded_at"] = iso(NOW - 8000); sup.supervise(r, NOW, False)
 check("review waiting past the limit: escalated", emitted and emitted[-1][2]["code"] == "other" and "no verdict" in emitted[-1][2]["reason"], emitted)
+EVENTS["t2"] += [{"type": "task.escalated", "recorded_at": iso(NOW - 180)}, {"type": "task.escalation_resolved", "recorded_at": iso(NOW - 60)}]
+emitted.clear(); sup.supervise(r, NOW, False)
+check("just resolved, same silent reviewer: no re-escalation (the overnight loop)", not emitted, emitted)
+EVENTS["t2"][-1]["recorded_at"] = iso(NOW - 7300); EVENTS["t2"][-2]["recorded_at"] = iso(NOW - 7400)
+sup.supervise(r, NOW, False)
+check("a full window after the resolution: escalated again", emitted and emitted[-1][2]["code"] == "other", emitted)
+EVENTS["t1"] = [{"type": "task.nudged", "recorded_at": iso(NOW - 1000)}, {"type": "task.escalation_resolved", "recorded_at": iso(NOW - 100)}]
+t.update(status="assigned", assigned_at=iso(NOW - 2000)); t["ext"]["nudges_since_activity"] = 2; emitted.clear()
+sup.supervise(t, NOW, False)
+check("stuck, resolved without a reassignment: wait a check-in window", not emitted, emitted)
 # dispatcher
 state = {"tasks": {}, "goals": {}}
 emitted.clear(); launched.clear()

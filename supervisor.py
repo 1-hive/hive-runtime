@@ -118,7 +118,10 @@ def supervise_long_lived(t: dict, now: float, dry: bool) -> None:
             return
         hist = json.loads(hive("task", task))["events"]
         assigned = max((ts(e["recorded_at"]) for e in hist if e["type"] == "review.assigned"), default=None)
-        if assigned and now - assigned > REVIEW_WAIT_S:
+        # after an escalation (or its resolution) the reviewer gets a full window again, not a re-escalation
+        # every pass while the same reviewer stays silent
+        since = max([assigned or 0, last_escalation(hist)])
+        if assigned and now - since > REVIEW_WAIT_S:
             emit("task.escalated", task, {"to": "chief_of_staff", "code": "other",
                                           "reason": f"no verdict from {rv} after {int((now - assigned) / 60)} min"}, dry=dry)
         return
@@ -138,9 +141,18 @@ def supervise_long_lived(t: dict, now: float, dry: bool) -> None:
             emit("task.nudged", task, {"reason": f"{what} for {int((now - since) / 60)} min "
                                                  f"(limit {limit // 60} min); report or ask"}, dry=dry)
         return
+    hist = json.loads(hive("task", task))["events"]
+    if now - last_escalation(hist) <= limit:     # escalated or resolved within the check-in window: wait
+        return
     emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck",
                                   "reason": f"{what} for {int((now - since) / 60)} min after {nudges} nudges; "
                                             f"{t.get('owner')} may need reassigning"}, dry=dry)
+
+
+def last_escalation(hist: list[dict]) -> float:
+    """When the task was last escalated or had an escalation resolved (0 if never)."""
+    return max((ts(e["recorded_at"]) or 0 for e in hist
+                if e["type"] in ("task.escalated", "task.escalation_resolved")), default=0)
 
 
 def ts(s: str | None) -> float | None:
