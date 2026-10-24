@@ -10,6 +10,7 @@ unblocked -> result with code and base pins -> review failed -> new result -> re
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 import socket
@@ -218,7 +219,7 @@ def main():
         code = tmp / "w1-code"
         sh("git", "clone", "-q", str(tmp / "code.git"), str(code), env=gitenv)
         w1 = Agent(tmp / "iter-w1", "w1", {**conf("w1", {"code": str(code)}), "declare_seconds": 2, "beacon": beacon,
-                                          "declare_files": {"flags": "memory/flags.json"}}, sidecar=True)   # as on vm2
+                                          "declare_files": {"flags": "memory/flags.json"}, "propose_goal": "g1"}, sidecar=True)   # as on vm2
         rv1 = Agent(tmp / "iter-rv1", "rv1", conf("rv1", {}))
         agents += [w1, rv1]
         os.environ["HIVEPIN_CACHE_DIRECTORY"] = str(tmp / "pincache")
@@ -369,6 +370,31 @@ def main():
         print("  reviewer runner: kickoff written, its own clone made, stand-in command ran, verdict passed recorded, cause = the result")
         hive("cos", "emit", "task.closed", "--task", "t2")
         assert json.loads(hive("cos", "task", "t2"))["task"]["status"] == "done"
+        # a task asked for in chat, proposed by the agent through the record; the chief of staff approves or rejects
+        print("propose:")
+        w1.tool("propose", "", "Summarize the journal\nOne page for Charlie, who asked in protobots.", "telegram:-500/42")
+        w1.wait_for("OK: proposed p-")
+        pid = re.search(r"proposed (p-[a-z0-9-]+)", w1.heard[-1]).group(1)
+        st = json.loads(hive("cos", "state"))
+        pr = st["proposals"][pid]
+        assert pr["status"] == "pending" and pr["proposer"] == "w1", pr
+        sub_ev = [json.loads(l) for l in hive("cos", "events", "--type", "proposal.submitted").splitlines() if l.strip()][-1]
+        assert sub_ev.get("cause") == {"external": "telegram:-500/42"}, sub_ev.get("cause")
+        hive("cos", "emit", "proposal.approved", "--data", json.dumps({"proposal_id": pid}))
+        t = json.loads(hive("cos", "task", pid))["task"]
+        assert t["title"] == "Summarize the journal" and t["status"] == "created" and t["created_by"] == "cos", t
+        w1.wait_for(f"Your proposal {pid} was approved")
+        hive("cos", "emit", "task.assigned", "--task", pid, "--data", json.dumps(
+            {"to": "w1", "ext": {"lease": {"accept_within_seconds": 600, "checkin_every_seconds": 900}}}))
+        w1.wait_for(f"New task {pid} for you")
+        assert "One page for Charlie" in w1.heard[-1], w1.heard[-1]
+        w1.tool("propose", "", "Rewrite everything in Rust", "Ben, private chat")
+        w1.wait_for("OK: proposed p-")
+        pid2 = re.search(r"proposed (p-[a-z0-9-]+)", w1.heard[-1]).group(1)
+        hive("cos", "emit", "proposal.rejected", "--data", json.dumps({"proposal_id": pid2, "reason": "out of scope for this hive"}))
+        w1.wait_for(f"Your proposal {pid2} was rejected: out of scope for this hive")
+        print("  proposed (cause: the chat message), approved by the chief of staff into a task, assigned; a second rejected with its reason")
+
         # self-modification: the sidecar re-declares the agent when its code changes
         def harness():
             return next(a for a in json.loads(hive("cos", "actors")) if a["id"] == "w1")["declaration"]["harness"]

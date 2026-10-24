@@ -253,6 +253,24 @@ class Hive:
             return f"({where}: not readable in {clone})"
         return f"({where})\n{text[:MAX_TEXT]}" + ("\n[... truncated]" if len(text) > MAX_TEXT else "")
 
+    def order(self, pid, text):
+        """Commit a proposed task's order to the workspace (proposals/), push it, and return its pin."""
+        rel = Path("proposals") / f"{datetime.date.today().isoformat()}-{pid}.md"
+        return self.commit_file(rel, text, f"{pid}: proposed", "order")
+
+    def commit_file(self, rel, content, msg, name):
+        clone, branch = self.ws["clone"], self.ws.get("branch", "main")
+        self.git(clone, "fetch", "-q", "origin")
+        self.git(clone, "checkout", "-q", branch)
+        self.git(clone, "merge", "-q", "--ff-only", f"origin/{branch}")
+        (Path(clone) / rel).parent.mkdir(parents=True, exist_ok=True)
+        (Path(clone) / rel).write_text(content)
+        self.git(clone, "add", str(rel))
+        self.git(clone, "-c", f"user.name={self.actor}", "-c", f"user.email={self.actor}@{self.c['hive_id']}.invalid",
+                 "commit", "-q", "-m", msg)
+        self.git(clone, "push", "-q", "origin", f"HEAD:{branch}")
+        return self.pin(self.ws["repository"], self.git(clone, "rev-parse", "HEAD").strip(), str(rel), name)
+
     def report(self, task, kind, text):
         """Commit a report to the workspace, push it, and return its pin."""
         clone, branch = self.ws["clone"], self.ws.get("branch", "main")
@@ -338,6 +356,41 @@ def _mark(tid, key):
     f.write_text(json.dumps(d))
 
 
+ORIGIN = re.compile(r"^telegram:-?\d+/\d+$")
+
+
+def propose(h, st, text, origin):
+    """A task someone asked for in chat, proposed to the chief of staff through the record (proposal.submitted with
+    a complete task.created, approver class chief_of_staff), from any chat, private ones included. The order goes
+    to the workspace; the chief of staff approves (the task is created) and assigns, or rejects with a reason."""
+    title, _, body = text.partition("\n")
+    title = title.strip().lstrip("#").strip()[:200]
+    if not title:
+        raise Failed("propose needs text: a title line, then what is wanted")
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:28].strip("-") or "task"
+    pid = f"p-{datetime.date.today().strftime('%m%d')}-{slug}-{os.urandom(2).hex()}"
+    where = origin or "not given"
+    order = (f"# {title}\n\nProposed by {h.actor}, asked in chat ({where}).\n\n{body.strip() or title}\n\n"
+             "Route facts: specification=unknown verification=unknown scope=unknown consequence=unknown leverage=unknown\n")
+    pin = json.loads(Path(h.order(pid, order)).read_text())
+    proposed = {"type": "task.created", "task": pid, "basis": (st.get("hive") or {}).get("head", 0),
+                "idempotency_key": f"proposal:{pid}", "refs": [{"rel": "order", "pin": pin}],
+                "data": {"title": title, "ext": {"kind": "work"}}}
+    if h.c.get("propose_goal"):        # a hive whose tasks need a goal (the 1-hive profile)
+        proposed["goal"] = h.c["propose_goal"]
+    args = ["emit", "proposal.submitted", "--data",
+            json.dumps({"proposal_id": pid, "proposed": proposed, "approver_class": "chief_of_staff"})]
+    if ORIGIN.match(origin):
+        args += ["--cause-external", origin]
+    out = h.hive(*args)
+    try:
+        e = json.loads(out)
+    except ValueError:
+        raise Failed(out.strip()[-400:])
+    return (f"proposed {pid} at position {e['position']}: the chief of staff approves it (it becomes a task, "
+            f"assigned on this channel) or says why not")
+
+
 def find_task(h, st, task_id, roles=("owner",)):
     if task_id:
         t = st["tasks"].get(task_id)
@@ -355,6 +408,8 @@ def do(h, req):
     """One queued action. Returns the line the agent sees."""
     st = h.state()
     action, text = req["action"], (req.get("text") or "").strip()
+    if action == "propose":
+        return propose(h, st, text, (req.get("extra") or "").strip())
     t = find_task(h, st, req.get("task", ""))
     tid = t["id"]
     if action == "accept":
@@ -454,6 +509,18 @@ def poll(h):
                      f"extra='passed|failed|needs_information').")
         if now:
             seen[tid] = now
+    # the agent's proposals: tell it when the chief of staff decides
+    for p in (st.get("proposals") or {}).values():
+        if p.get("proposer") != h.actor or p.get("status") not in ("approved", "rejected"):
+            continue
+        key = f"_proposal:{p['id']}"
+        if key not in seen and not first:
+            if p["status"] == "approved":
+                tell(f"Your proposal {p['id']} was approved: it is a task now; its assignment comes on this channel.")
+            else:
+                tell(f"Your proposal {p['id']} was rejected: {p.get('reason') or 'no reason given'}. Tell the person "
+                     "who asked, if they're waiting.")
+        seen[key] = p["status"]
     # the supervisor's nudges, delivered as messages (a long-lived agent is talked to, not restarted)
     nudged_after = seen.get("_nudges")
     out = h.hive("events", "--after", str(nudged_after or 0), "--type", "task.nudged")

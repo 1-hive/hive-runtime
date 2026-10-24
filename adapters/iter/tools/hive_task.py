@@ -3,14 +3,14 @@ import os
 import time
 from pathlib import Path
 
-DESCRIPTION = ("Act on a hive record task (the hive channel tells you of them). action: accept (when you start), "
-               "progress or checkpoint (text = done and next), block (text = your question; extra = decision, "
-               "information, access or external), unblock (once answered), result (text = the report; push code "
-               "first), review (a task you review; text = findings; extra = passed, failed or needs_information). "
-               "task = the task id (empty: your only open task). The outcome comes on the hive channel within a "
-               "minute.")
+DESCRIPTION = ("Hive record actions; the hive channel tells you of tasks. action: propose (a task someone asked "
+               "for in chat: text = title line, then what is wanted; extra = where, e.g. telegram:<chat>/<msg>), "
+               "accept, progress or checkpoint (text), block (text = question; extra = decision, information, access "
+               "or external), unblock, result (text = report; push code first), review (text = findings; extra = "
+               "passed, failed or needs_information). task = id (empty: your open task). Outcomes come on the hive "
+               "channel.")
 
-ACTIONS = ("accept", "progress", "checkpoint", "block", "unblock", "result", "review")
+ACTIONS = ("propose", "accept", "progress", "checkpoint", "block", "unblock", "result", "review")
 
 
 def run(action, task, text, extra=""):
@@ -27,4 +27,5 @@ def run(action, task, text, extra=""):
     tmp.write_text(json.dumps({"action": action, "task": (task or "").strip(), "text": text or "",
                                "extra": (extra or "").strip()}))
     tmp.replace(out / name)
-    return f"QUEUED: {action} {task or '(your open task)'}; the outcome arrives on the hive channel"
+    what = "a proposal" if action == "propose" else (task or "(your open task)")
+    return f"QUEUED: {action} {what}; the outcome arrives on the hive channel"

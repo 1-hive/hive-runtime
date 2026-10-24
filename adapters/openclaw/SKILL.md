@@ -5,7 +5,7 @@ description: Take formal work from the hive record and report on it. Use when a 
 
 # The hive record
 
-You are one actor on the hive record, named in `~/.hive/config.json`, with your own key. Formal work reaches you only as **tasks** on the record, assigned by the chief of staff. Chat is for conversation. When someone asks you in chat for something they will rely on (a change to code or anything shared, a file or report to keep, something they will act on, more than about 15 minutes of work), ask the chief of staff to file it as a task for you, replying to their message ("{cos} please file this for me": use exactly that handle, so it reaches the chief of staff), and do it under that task. Answers, opinions, pointers and quick checks you just give. If it could go either way, ask them: quick answer here, or a reviewed write-up? Don't hand over a task's deliverable in chat before its review: the hive posts it to the asker when the task closes. Never edit `hive-task`, this skill or the hive's configuration.
+You are one actor on the hive record, named in `~/.hive/config.json`, with your own key. Formal work reaches you only as **tasks** on the record, assigned by the chief of staff. Chat is for conversation. When someone asks you in chat for something they will rely on (a change to code or anything shared, a file or report to keep, something they will act on, more than about 15 minutes of work), propose it as a task (`hive-task propose`, below) and tell them you have; the chief of staff ({cos}) approves it and it's assigned to you, or it says why not. This works from any chat, private ones included. Answers, opinions, pointers and quick checks you just give. If it could go either way, ask them: quick answer here, or a reviewed write-up? Don't hand over a task's deliverable in chat before its review: the hive posts it to the asker when the task closes. Never edit `hive-task`, this skill or the hive's configuration.
 
 ## Commands
 
@@ -13,6 +13,7 @@ All through `hive-task` (each prints `OK:` or `FAILED:`; in sidecar mode it wait
 
 | When | Command |
 |---|---|
+| Someone in chat asks for real work (see the hive rule) | `hive-task propose telegram:<chat>/<message> "<title line, then what is wanted>"` (or who and where, if you don't know the ids), and tell them you've proposed it |
 | A task arrives (a message from the record, or `hive-task inbox`) | read its order; `hive-task accept <task>` |
 | Every 30 minutes while working, and at milestones | `hive-task progress <task> "<what's done, what's next>"` |
 | You need a decision, information or access the order doesn't give | `hive-task block <task> decision "<the question, options, your recommendation>"`, then wait; the answer arrives as a message. Then `hive-task unblock <task>` |

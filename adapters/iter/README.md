@@ -6,6 +6,7 @@ For hives whose agents run continuously ([Iter](https://github.com/patham9/iter)
   - **What it delivers** on the `[hive]` channel: each task assigned to the agent, with its order; an answer to its question; a review of its result; a result for it to review (if it's a reviewer); and the outcome of each action it asked for. When the channel starts, it first reports everything already waiting on the agent.
   - **`send` on this channel** posts a short progress report on the agent's one open task.
 - **`tools/hive_task.py`** (copy to the agent's `tools/`): `hive_task(action, task, text, extra)`, with these actions:
+  - `propose`: a task someone asked for in chat (text: a title line, then what is wanted; extra: where it was asked, `telegram:<chat>/<message>`). The sidecar commits the order under `proposals/` in the workspace and submits `proposal.submitted` (a complete `task.created`, for the chief of staff; `cause` = that message), then tells the agent when the chief of staff approves or rejects it. Works from any chat. A hive whose tasks need a goal sets `propose_goal` in the config;
   - `accept`: when it starts;
   - `progress`, `checkpoint`;
   - `block`: a question, with `extra` set to `decision`, `information`, `access` or `external`;

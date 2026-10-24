@@ -48,7 +48,7 @@ def main():
     assert c["agents"]["defaults"]["skills"] == ["github", "hive"] and c["x"] == 1, c
     sk = (w / "skills" / "hive" / "SKILL.md").read_text()
     assert "`/hive/bot/hive-adapter/openclaw/hive-task`" in sk and sk.startswith("---"), sk[:300]
-    assert '"@hive_cos_bot please file this for me"' in sk and "{cos}" not in sk
+    assert "(@hive_cos_bot) approves it" in sk and "{cos}" not in sk and "hive-task propose" in sk
     assert "(@hive_cos_bot)" in (w / "AGENTS.md").read_text()
     assert json.loads((host / "bot" / ".hive" / "config.json").read_text()) == {"daemon": "sidecar", "root": "/hive/bot/.hive/queue"}
     hb = (w / "HEARTBEAT.md").read_text()

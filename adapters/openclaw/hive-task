@@ -2,6 +2,8 @@
 """hive-task: an OpenClaw (or any shell-capable, long-lived) agent's hand on the hive record.
 
     hive-task inbox                               what the record wants from you now
+    hive-task propose    <where> <text>           a task someone asked for in chat (where: telegram:<chat>/<msg>,
+                                                  or who and where); text: a title line, then what is wanted
     hive-task accept     <task>
     hive-task progress   <task> <text>            a short report (also: checkpoint)
     hive-task block      <task> <needs> <text>    a question; needs = decision|information|access|external
@@ -58,6 +60,8 @@ def main() -> None:
         req["extra"], req["text"] = (rest[1] if len(rest) > 1 else ""), " ".join(rest[2:])
     elif action == "review":
         req["extra"], req["text"] = (rest[1] if len(rest) > 1 else ""), " ".join(rest[2:])
+    elif action == "propose":
+        req["task"], req["extra"], req["text"] = "", (rest[0] if rest else ""), " ".join(rest[1:])
     elif action not in ("accept", "unblock"):
         sys.exit(f"unknown action {action}\n{__doc__}")
     if queued:
