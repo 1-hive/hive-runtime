@@ -799,10 +799,12 @@ def daemon():
                 path.unlink()
             except (FileNotFoundError, ValueError):
                 continue
+            # hive-task waits on the inbox for its outcome; delivering it as a new turn would leave it waiting
+            answer = (lambda t: _put(INBOX, t)) if req.get("reply") == "inbox" else tell
             try:
-                tell(f"OK: {do(h, req)}")
+                answer(f"OK: {do(h, req)}")
             except (Failed, subprocess.TimeoutExpired, KeyError) as e:
-                tell(f"FAILED: {req.get('action')} {req.get('task') or ''}: {e}")
+                answer(f"FAILED: {req.get('action')} {req.get('task') or ''}: {e}")
             log(f"did {req.get('action')} {req.get('task')}")
             next_poll = 0.0
         if time.time() >= next_poll:

@@ -75,6 +75,7 @@ def main() -> None:
 def queue(mod, req, wait):
     """Hand the action to the sidecar and wait for its outcome (an "OK:" or "FAILED:" message)."""
     import time
+    req["reply"] = "inbox"
     mod._put(mod.OUTBOX, req)
     got, end = [], time.time() + wait
     while time.time() < end:
