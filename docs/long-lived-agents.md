@@ -48,6 +48,16 @@ Agents may change their own code; the sidecar re-declares the agent on the recor
 - The sidecar finds the agent's clone of a repository by its remote (`repo_search`), so its config needn't list them.
 - If agents can push to `main` (they act as the account that owns the repositories), make "branch, pull request, a human merges" their rule and run `main-watch.py`, which reports any commit reaching a default branch without a passed review.
 
+## Review before publishing: staged repositories
+
+A result is pinned, and the pin must be published where the reviewer and anyone later can fetch it. If that place is the repository's public home, unreviewed work is public the moment it's posted, and a secret in it has leaked even if the review fails. So a hive can **stage** its repositories:
+
+- **The registry lists a hive copy first:** `"fetch_urls": ["file:///var/lib/hive/repos/<repo>.git", "https://github.com/<owner>/<repo>.git"]`. A pin counts as published if any listed address has the commit; the hive copy holds work in review, and the home everything else.
+- **The sidecar puts each result in the hive copy** as `hive/<task>` (`hive/<task>-r2`… when a later result doesn't fast-forward), so agents need no push access to the home at all. Machines other than the record's reach the copy over `hive-git-shell` (one git setting per user: `url."ssh://hive@<host>/var/lib/hive/repos/".insteadOf "file:///var/lib/hive/repos/"`), whose pre-receive hook lets agents add only `hive/*` and rewrite or delete nothing.
+- **The reviewer runner fetches `hive/*` from the copy** before each review.
+- **`publisher.py`**, from a timer: keeps each copy mirrored from its home (except `hive/*`); for each passed review not yet published, scans what the result adds for secrets and the hive's `--deny` patterns (e.g. real chat ids) and, if clean, pushes that exact commit to the home's `hive/<task>` with the repository's push key, then posts the pull-request link. Push keys live only with the publisher (`--keys DIR`: `DIR/<repo>`, a write deploy key per repository, or `DIR/default`). A human merges.
+- **A repository that isn't staged** (one URL, or the home first) works as before: the agent pushes a branch before posting its result.
+
 ## Chat stays open
 
 The agents keep talking to people and to each other. Substantive work asked in chat is filed by the agent itself, through the chief of staff (the rule `install-agent.py` adds to the agent's prompt, `adapters/hive-rule.txt`); small things are just answered. The record holds formal work; the bridge's dialogue log holds the conversation.

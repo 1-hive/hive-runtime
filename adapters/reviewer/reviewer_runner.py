@@ -25,6 +25,7 @@ cut to 200 characters), cleared by the next run that gives one.
 """
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -61,6 +62,12 @@ def reviewer_clone(h, repo):
         h.repos[repo] = clone
         h.write_registry()
     subprocess.run(["git", "-C", clone, "fetch", "-q", "origin"], capture_output=True)
+    # A staged repository's results are only in the hive's copy until they pass review (publisher.py): fetch its
+    # hive/* branches too, so the commit under review is in the clone.
+    urls = (h.reg["repositories"].get(repo) or {}).get("fetch_urls") or []
+    if len(urls) > 1 and urls[0].startswith("file://"):
+        subprocess.run(["git", "-C", clone, "fetch", "-q", "--no-tags", urls[0], "+refs/heads/hive/*:refs/remotes/hive-copy/hive/*"],
+                       capture_output=True, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     return clone
 
 
@@ -98,7 +105,7 @@ def kickoff(h, t):
     for repo, cb in refs.items():
         clone = reviewer_clone(h, repo)
         lines += ["", f"## Code: {repo}", f"base {cb.get('base')} .. code {cb.get('code')}"
-                  + (f"; your clone: {clone} (run `git fetch` there, then `git diff {cb.get('base')}..{cb.get('code')}` "
+                  + (f"; your clone: {clone} (both commits are fetched there: `git diff {cb.get('base')}..{cb.get('code')}`, "
                      f"and check out {cb.get('code')} to run things)" if clone else " (no clone configured)")]
     notes = h.c.get("review_notes")
     if notes:   # the hive's own notes for its reviewer, e.g. how to set up a clone to run its tests

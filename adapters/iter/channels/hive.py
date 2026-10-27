@@ -375,6 +375,32 @@ def pushed(h, clone, head, r=None):
     return bool(h.git(clone, "branch", "-r", "--contains", head, check=False).strip())
 
 
+def hive_copy(h, r):
+    """Repository r's hive copy, when the hive stages it: the registry's first fetch URL, if that is a path on the
+    record's host (file://; on another machine git's url.insteadOf turns it into the hive's ssh route). Results
+    go there for review; the publisher sends a reviewed commit on to the repository's own home."""
+    urls = (h.reg["repositories"].get(r) or {}).get("fetch_urls") or []
+    return urls[0] if len(urls) > 1 and urls[0].startswith("file://") else None
+
+
+def stage(h, clone, head, r, tid):
+    """Push the agent's commit to the hive copy as refs/heads/hive/<task> (or hive/<task>-r2, -r3... when a later
+    result doesn't fast-forward the earlier one: the copy keeps every ref, so every pinned commit stays
+    reachable). Reads the agent's clone only: a push to a URL writes nothing there. Returns the branch."""
+    url = hive_copy(h, r)
+    env = {**h.env, "GIT_TERMINAL_PROMPT": "0"}
+    for n in range(1, 21):
+        branch = f"hive/{tid}" + (f"-r{n}" if n > 1 else "")
+        p = subprocess.run(["git", "-C", clone, "push", "-q", url, f"{head}:refs/heads/{branch}"], env=env,
+                           capture_output=True, text=True, timeout=300)
+        if p.returncode == 0:
+            log(f"staged {r} {head[:12]} in the hive copy as {branch}")
+            return branch
+        if not re.search(r"non-fast-forward|not a fast-forward|fetch first|rejected", p.stderr):
+            raise Failed(f"couldn't put {r} {head[:12]} in the hive's copy for review: {p.stderr.strip()[-300:]}")
+    raise Failed(f"couldn't put {r} {head[:12]} in the hive's copy for review: hive/{tid} and 19 retries are taken")
+
+
 SKIP_DIRS = {".runtime", "node_modules", ".cache", ".venv", "venv", "__pycache__", ".npm", ".hive"}
 
 
@@ -494,7 +520,9 @@ def do(h, req):
             clone = h.clone(r)
             head = h.git(clone, "rev-parse", "HEAD").strip()
             base[r] = base_for(h, clone, head, base.get(r), start_tip(h, clone, r, t))   # none recorded: the clone came later
-            if not pushed(h, clone, head, r):
+            if hive_copy(h, r):
+                stage(h, clone, head, r, tid)             # staged repository: the hive publishes it after review
+            elif not pushed(h, clone, head, r):
                 raise Failed(f"push {r} first: its HEAD {head[:12]} is on no remote branch")
             refs += [("code", h.pin(r, head, name="code")), ("base", h.pin(r, base[r], name="base"))]
         e = h.emit("task.result_posted", tid, None, [("result", h.report(t, "result", text))] + refs,
