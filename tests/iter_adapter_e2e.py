@@ -242,6 +242,10 @@ def main():
         hive("cos", "emit", "task.answered", "--task", "t1", "--ref", f"answer={apin}")
         w1.wait_for("was answered")
         assert "Add line a." in w1.heard[-1], w1.heard[-1]
+        # a second answer on the same block (the chief of staff adds to it) reaches the agent too
+        apin2 = commit_ws("projects/p1/questions/t1-answer-2.md", "And keep it short.\n", "answer 2")
+        hive("cos", "emit", "task.answered", "--task", "t1", "--ref", f"answer={apin2}")
+        w1.wait_for("keep it short")
         w1.tool("unblock", "t1", "", "")
         w1.wait_for("OK: t1 unblocked")
         # the result is refused until the code is pushed

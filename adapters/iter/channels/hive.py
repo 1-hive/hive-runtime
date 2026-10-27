@@ -488,9 +488,11 @@ def poll(h):
                 tell(f"New task {tid} for you: {t.get('title', '')}\nOrder: {h.read_pin(t.get('order'))}\n\n"
                      f"Accept it with hive_task(action='accept', task='{tid}', text='', extra='') when you start.")
             b = t.get("block") or {}
-            now["answered"] = bool(b.get("answered"))
-            if now["answered"] and not prev.get("answered") and t["status"] == "blocked":
-                ans = next((v for v in b.values() if isinstance(v, dict) and "commit_oid" in v), None)
+            ans = next((v for v in b.values() if isinstance(v, dict) and "commit_oid" in v), None)
+            # the answer itself, not just "answered": a block can be answered more than once
+            now["answer"] = (f"{ans.get('commit_oid')}:{ans.get('path')}" if ans
+                             else b.get("note") or "answered") if b.get("answered") else None
+            if now["answer"] and now["answer"] != prev.get("answer") and t["status"] == "blocked":
                 tell(f"Your question on {tid} was answered: {h.read_pin(ans) or b.get('note', '')}\n"
                      f"Continue with hive_task(action='unblock', task='{tid}', text='', extra='').")
             lr = t.get("latest_review") or {}
