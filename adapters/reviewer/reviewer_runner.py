@@ -65,16 +65,30 @@ def reviewer_clone(h, repo):
 
 
 def kickoff(h, t):
-    """What the reviewer gets: the order, the result, and where the code is."""
+    """What the reviewer gets: the order, the questions and answers that changed it, the result, and where the code is."""
     cr = t["current_result"]
     lines = [f"# Review {t['id']}: {t.get('title', '')}", "",
              f"You are {h.actor}, an independent reviewer. Judge the result below against its order. Re-run what "
              "matters; don't trust the report's claims, and don't fix anything. Write your findings with evidence, "
              "then end with one line: VERDICT: passed, VERDICT: failed, or VERDICT: needs_information.", "",
              "## Order", h.read_pin(t.get("order")), "", f"## Result (by {cr.get('author')})", h.read_pin(cr.get("pin"))]
-    refs = {}
+    refs, evs = {}, []
     try:
         evs = json.loads(h.hive("task", t["id"])).get("events") or []
+    except (ValueError, KeyError):
+        pass
+    # the worker's questions and their answers: an answer can change the order (a criterion relaxed, a scope cut)
+    qa = []
+    for e in evs:
+        for r in e.get("refs") or []:
+            if (e.get("type"), r.get("rel")) in (("task.blocked", "question"), ("task.answered", "answer")):
+                who = "Question (worker)" if r["rel"] == "question" else "Answer (" + (e.get("actor") or {}).get("id", "") + ")"
+                qa += ["", f"### {who}, {str(e.get('recorded_at', ''))[:16]}", h.read_pin(r.get("pin"))]
+    if qa:
+        lines += ["", "## Questions and answers during the task",
+                  "An answer from whoever assigned the task can change the order: where they differ, the latest answer "
+                  "holds. Judge against the order as the answers left it."] + qa
+    try:
         res = next((e for e in reversed(evs) if e.get("event_id") == cr.get("event_id")), None)
         for r in (res or {}).get("refs") or []:
             if r["rel"] in ("code", "base"):

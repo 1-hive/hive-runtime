@@ -317,6 +317,11 @@ def main():
         print("  hive-task inbox:", got.splitlines()[0][:80])
         assert ht("accept", "t2").startswith("OK: accepted t2"), ht("accept", "t2")
         assert ht("progress", "t2", "Adding", "line", "b").startswith("OK: progress"), "progress"
+        # a question and its answer, which the reviewer must see with the order
+        assert ht("block", "t2", "decision", "Which", "line?").startswith("OK:"), "block"
+        apin_t2 = commit_ws("projects/p1/questions/t2-answer.md", "Use line b; tests are not needed.\n", "answer t2")
+        hive("cos", "emit", "task.answered", "--task", "t2", "--ref", f"answer={apin_t2}")
+        assert ht("unblock", "t2").startswith("OK:"), "unblock"
         (code / "README.md").write_text("code\na\nb\n")
         sh("git", "-C", str(code), "commit", "-q", "-am", "add b", env=gitenv)
         assert "push code first" in ht("result", "t2", "Added line b."), "unpushed result must be refused"
@@ -386,6 +391,7 @@ def main():
         print("  hive-task in sidecar mode: inbox from the sidecar, accept queued and answered, a refusal reported")
         fake = tmp / "fake-review.py"
         fake.write_text("import sys, pathlib; k = open(sys.argv[1]).read()\nprint('Reviewed:', k.splitlines()[0])\n"
+                        f"'tests are not needed' in k and 'Which line?' in k and pathlib.Path({str(tmp / 'qa-seen')!r}).write_text('y')\n"
                         f"'Set up a venv with uv.' in k and pathlib.Path({str(tmp / 'notes-seen')!r}).write_text('y')\n"
                         "print('base..code named:', 'base ' in k)\nprint('VERDICT: passed')\n")
         rconf = {**conf("rv1-runner-" + "x", {}), "actor": "rv1", "key_file": str(tmp / "rv1.key"),
@@ -409,6 +415,7 @@ def main():
         assert rev.get("cause") == {"event": cr2["event_id"]}, rev.get("cause")
         assert (tmp / "clones" / "code" / ".git").is_dir(), "the reviewer clones a repository it has no clone of"
         assert (tmp / "notes-seen").is_file(), "the hive's review notes are in the kickoff"
+        assert (tmp / "qa-seen").is_file(), "the worker's questions and their answers are in the kickoff"
         print("  reviewer runner: kickoff written, its own clone made, stand-in command ran, verdict passed recorded, cause = the result")
         hive("cos", "emit", "task.closed", "--task", "t2")
         assert json.loads(hive("cos", "task", "t2"))["task"]["status"] == "done"
