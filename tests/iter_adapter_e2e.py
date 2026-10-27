@@ -316,7 +316,13 @@ def main():
         assert "New task t2" in got, got
         print("  hive-task inbox:", got.splitlines()[0][:80])
         assert ht("accept", "t2").startswith("OK: accepted t2"), ht("accept", "t2")
-        assert ht("progress", "t2", "Adding", "line", "b").startswith("OK: progress"), "progress"
+        # a write whose push failed earlier left a local commit behind (Astra, 2026-10-27): the next write still works
+        wsw = tmp / "w1-workspace"
+        (wsw / "stale.md").write_text("an earlier write whose push failed\n")
+        sh("git", "-C", str(wsw), "add", "stale.md", env=gitenv)
+        sh("git", "-C", str(wsw), "commit", "-q", "-m", "stale", env=gitenv)
+        commit_ws("projects/p1/elsewhere.md", "someone else pushed meanwhile\n", "other writer")
+        assert ht("progress", "t2", "Adding", "line", "b").startswith("OK: progress"), "progress after a stale local commit"
         # a question and its answer, which the reviewer must see with the order
         assert ht("block", "t2", "decision", "Which", "line?").startswith("OK:"), "block"
         apin_t2 = commit_ws("projects/p1/questions/t2-answer.md", "Use line b; tests are not needed.\n", "answer t2")

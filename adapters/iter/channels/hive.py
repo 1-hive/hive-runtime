@@ -258,25 +258,42 @@ class Hive:
         rel = Path("proposals") / f"{datetime.date.today().isoformat()}-{pid}.md"
         return self.commit_file(rel, text, f"{pid}: proposed", "order")
 
+    def ws_sync(self, clone, branch):
+        """Put the workspace clone exactly at the remote's branch. A local commit the remote lacks can only be an
+        earlier write whose push failed (it was never pinned, and its writer retries), so it is dropped: kept, it
+        would stop every later write (a merge that can't fast-forward)."""
+        self.git(clone, "fetch", "-q", "origin")
+        self.git(clone, "checkout", "-q", "-B", branch, f"origin/{branch}")
+        self.git(clone, "reset", "-q", "--hard", f"origin/{branch}")
+
+    def ws_push(self, clone, branch, tries=4):
+        """Push the new commit; if someone else pushed first (the workspace has many writers), rebase onto theirs and
+        try again. Each write adds its own file, so the rebase doesn't conflict."""
+        for i in range(tries):
+            try:
+                return self.git(clone, "push", "-q", "origin", f"HEAD:{branch}")
+            except Failed:
+                if i == tries - 1:
+                    raise
+                time.sleep(1 + i)
+                self.git(clone, "fetch", "-q", "origin")
+                self.git(clone, "rebase", "-q", f"origin/{branch}")
+
     def commit_file(self, rel, content, msg, name):
         clone, branch = self.ws["clone"], self.ws.get("branch", "main")
-        self.git(clone, "fetch", "-q", "origin")
-        self.git(clone, "checkout", "-q", branch)
-        self.git(clone, "merge", "-q", "--ff-only", f"origin/{branch}")
+        self.ws_sync(clone, branch)
         (Path(clone) / rel).parent.mkdir(parents=True, exist_ok=True)
         (Path(clone) / rel).write_text(content)
         self.git(clone, "add", str(rel))
         self.git(clone, "-c", f"user.name={self.actor}", "-c", f"user.email={self.actor}@{self.c['hive_id']}.invalid",
                  "commit", "-q", "-m", msg)
-        self.git(clone, "push", "-q", "origin", f"HEAD:{branch}")
+        self.ws_push(clone, branch)
         return self.pin(self.ws["repository"], self.git(clone, "rev-parse", "HEAD").strip(), str(rel), name)
 
     def report(self, task, kind, text):
         """Commit a report to the workspace, push it, and return its pin."""
         clone, branch = self.ws["clone"], self.ws.get("branch", "main")
-        self.git(clone, "fetch", "-q", "origin")
-        self.git(clone, "checkout", "-q", branch)
-        self.git(clone, "merge", "-q", "--ff-only", f"origin/{branch}")
+        self.ws_sync(clone, branch)
         project = task.get("project") or "tasks"
         day = datetime.date.today().isoformat()
         rel_dir = Path("projects") / project / "reports"
@@ -289,7 +306,7 @@ class Hive:
         self.git(clone, "add", str(rel))
         self.git(clone, "-c", f"user.name={self.actor}", "-c", f"user.email={self.actor}@{self.c['hive_id']}.invalid",
                  "commit", "-q", "-m", f"{task['id']}: {kind} {n}")
-        self.git(clone, "push", "-q", "origin", f"HEAD:{branch}")
+        self.ws_push(clone, branch)
         return self.pin(self.ws["repository"], self.git(clone, "rev-parse", "HEAD").strip(), str(rel), kind)
 
 
