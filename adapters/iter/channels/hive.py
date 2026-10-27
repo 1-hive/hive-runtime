@@ -304,23 +304,50 @@ def default_tip(h, clone):
     return h.git(clone, "rev-parse", "HEAD").strip()
 
 
-def base_for(h, clone, head, recorded):
+def addresses(h, clone, r=None):
+    """Where to ask what a repository's branches are: the clone's remotes, then the registry's fetch URLs for it
+    (public https: the sidecar runs as its own user, often without the agent's ssh key or its host keys)."""
+    out = h.git(clone, "remote", check=False).split()
+    if r:
+        out += (h.reg["repositories"].get(r) or {}).get("fetch_urls", [])
+    return out
+
+
+def start_tip(h, clone, r, t):
+    """Where work in repository r starts: the branch the operators set for this agent (config "base_branches",
+    e.g. a bot whose own code lives on a branch that isn't the default), else the default branch. Never one
+    the agent picks: a base of its choosing could hide part of its change from the review."""
+    branch = (h.c.get("base_branches") or {}).get(r)
+    if not branch:
+        return default_tip(h, clone)
+    for remote in addresses(h, clone, r):
+        out = h.run("git", "-C", clone, "ls-remote", "--heads", remote, f"refs/heads/{branch}", check=False)
+        tip = (out.split() or [""])[0]
+        if tip and subprocess.run(["git", "-C", clone, "cat-file", "-e", tip + "^{commit}"], env=h.env,
+                                  capture_output=True).returncode == 0:
+            return tip
+        if tip:
+            raise Failed(f"{r}'s base branch {branch} is at {tip[:12]}, which your clone {clone} doesn't have: fetch it")
+    raise Failed(f"{r}'s base branch {branch} isn't on any of {', '.join(addresses(h, clone, r))}")
+
+
+def base_for(h, clone, head, recorded, start):
     """The base to pin with a result: the one recorded at accept if the work descends from it; otherwise where
-    the work left the default branch (a task accepted while the clone was elsewhere)."""
+    the work left its start branch (start_tip; a task accepted while the clone was elsewhere, or before it existed)."""
     if recorded and subprocess.run(["git", "-C", clone, "merge-base", "--is-ancestor", recorded, head], env=h.env,
                                    capture_output=True).returncode == 0:
         return recorded
-    fork = h.git(clone, "merge-base", head, default_tip(h, clone), check=False).strip()
+    fork = h.git(clone, "merge-base", head, start, check=False).strip()
     if not fork:
-        raise Failed(f"your work in {clone} shares no history with its default branch: start it from there")
-    log(f"base {(recorded or '?')[:12]} isn't an ancestor of {head[:12]}; using {fork[:12]}, where the work left the default branch")
+        raise Failed(f"your work in {clone} shares no history with the branch it should start from ({start[:12]}): start it there")
+    log(f"base {(recorded or '?')[:12]} isn't an ancestor of {head[:12]}; using {fork[:12]}, where the work left its start branch")
     return fork
 
 
-def pushed(h, clone, head):
+def pushed(h, clone, head, r=None):
     """Whether a commit is on a remote branch, without writing to the clone (a sidecar may run as another
     user than the agent): a branch tip on any remote is the commit, or contains it."""
-    for remote in h.git(clone, "remote", check=False).split():
+    for remote in addresses(h, clone, r):
         out = h.run("git", "-C", clone, "ls-remote", "--heads", remote, check=False)
         for tip in {line.split()[0] for line in out.splitlines() if line.strip()}:
             if tip == head:
@@ -417,7 +444,7 @@ def do(h, req):
         base = {}
         for r in (t.get("ext") or {}).get("repos") or []:
             try:
-                base[r] = default_tip(h, h.clone(r))
+                base[r] = start_tip(h, h.clone(r), r, t)
             except Failed as e:
                 raise Failed(f"accepted, but {e}; you can't post a result for {r} until then (accept again after cloning)")
         (TASKS / f"{tid}.json").write_text(json.dumps({"base": base, "accepted_at": time.time()}))
@@ -447,12 +474,10 @@ def do(h, req):
         if f.is_file():
             base = json.loads(f.read_text()).get("base", {})
         for r in (t.get("ext") or {}).get("repos") or []:
-            if r not in base:
-                raise Failed(f"no recorded base for {r}: accept the task through this tool first")
             clone = h.clone(r)
             head = h.git(clone, "rev-parse", "HEAD").strip()
-            base[r] = base_for(h, clone, head, base[r])
-            if not pushed(h, clone, head):
+            base[r] = base_for(h, clone, head, base.get(r), start_tip(h, clone, r, t))   # none recorded: the clone came later
+            if not pushed(h, clone, head, r):
                 raise Failed(f"push {r} first: its HEAD {head[:12]} is on no remote branch")
             refs += [("code", h.pin(r, head, name="code")), ("base", h.pin(r, base[r], name="base"))]
         e = h.emit("task.result_posted", tid, None, [("result", h.report(t, "result", text))] + refs,

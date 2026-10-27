@@ -323,6 +323,44 @@ def main():
         sh("git", "-C", str(code), "push", "-q", "origin", "HEAD:hive/t2", env=gitenv)
         assert ht("result", "t2", "Added line b.").startswith("OK: result posted"), "result"
         print("  hive-task: accept, progress, result refused until pushed, result posted")
+        # t2b: work that starts from the branch the operators set for this agent ("base_branches": a bot's own
+        # code, on a branch with no history in common with the default one), and no base recorded at accept
+        # (the clone came later): the result's base is that branch's tip, never one the agent picks
+        sh("git", "-C", str(code), "checkout", "-q", "--orphan", "botcode", env=gitenv)
+        (code / "README.md").write_text("the bot's own code\n")
+        sh("git", "-C", str(code), "commit", "-q", "-am", "snapshot", env=gitenv)
+        sh("git", "-C", str(code), "push", "-q", "origin", "botcode", env=gitenv)
+        snap = sh("git", "-C", str(code), "rev-parse", "HEAD", env=gitenv).strip()
+        opin2b = commit_ws("projects/p1/orders/t2b.md", "# Order t2b\n\nFix the bot's code.\n", "order 2b")
+        hive("cos", "emit", "task.created", "--task", "t2b", "--goal", "g1", "--ref", f"order={opin2b}",
+             "--data", json.dumps({"title": "Bot fix", "project": "p1",
+                                   "ext": {"kind": "work", "repos": ["code"]}}))
+        hive("cos", "emit", "task.assigned", "--task", "t2b", "--data", json.dumps(
+            {"to": "w1", "ext": {"lease": {"accept_within_seconds": 600, "checkin_every_seconds": 900}}}))
+        c2b = {**json.loads((tmp / "w1-sidecar-config.json").read_text()), "base_branches": {"code": "botcode"}}
+        c2b.setdefault("root", str(tmp))
+        (tmp / "w1-t2b-config.json").write_text(json.dumps(c2b))
+        henv["HIVE_TASK_CONFIG"] = str(tmp / "w1-t2b-config.json")
+        for _ in range(20):
+            if "New task t2b" in ht("inbox"):
+                break
+            time.sleep(2)
+        got = ht("accept", "t2b")
+        assert got.startswith("OK: accepted t2b") and snap[:12] in got, got
+        sroot = Path(json.loads((tmp / "w1-sidecar-config.json").read_text()).get("root") or tmp)
+        (sroot / ".runtime" / "hive" / "tasks" / "t2b.json").unlink()      # as if accepted before the clone existed
+        sh("git", "-C", str(code), "checkout", "-q", "-b", "hive/t2b", env=gitenv)
+        (code / "README.md").write_text("the bot's own code, fixed\n")
+        sh("git", "-C", str(code), "commit", "-q", "-am", "fix", env=gitenv)
+        sh("git", "-C", str(code), "push", "-q", "origin", "hive/t2b", env=gitenv)
+        got = ht("result", "t2b", "Fixed.")
+        assert got.startswith("OK: result posted"), got
+        res = [json.loads(l) for l in hive("cos", "events").splitlines() if "\"task.result_posted\"" in l and "\"t2b\"" in l][-1]
+        pins = {r["rel"]: r["pin"]["commit_oid"].split(":")[-1] for r in res["refs"] if r["rel"] in ("base", "code")}
+        assert pins["base"] == snap, (pins, snap)
+        sh("git", "-C", str(code), "checkout", "-q", "main", env=gitenv)
+        henv["HIVE_TASK_CONFIG"] = str(tmp / "w1-sidecar-config.json")
+        print("  hive-task: a start branch set by the operators, no base recorded at accept: base = that branch's tip")
         # t3: hive-task in sidecar mode: it only queues, w1's sidecar holds the key and does the work
         (tmp / "w1-queue-config.json").write_text(json.dumps({"daemon": "sidecar", "root": str(w1.root), "wait_seconds": 60}))
         qenv = {**os.environ, "HIVE_TASK_CONFIG": str(tmp / "w1-queue-config.json")}
