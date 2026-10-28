@@ -7,7 +7,8 @@ repository's own home (e.g. GitHub), and say where to open the pull request.
 A repository whose registry entry lists a hive copy first (a bare repository on the hive's host, a file:// URL)
 and its own home after it is *staged*: agents' results go to the hive copy (the sidecar pushes them to
 refs/heads/hive/<task> there), the reviewer reviews them there, and nothing reaches the home until a review
-passes. Then this pushes that exact commit to the home's refs/heads/hive/<task>; a human opens and merges the
+passes. Then this pushes that exact commit to the home's refs/heads/hive/<task> (hive/<task>-r2, -r3... when
+that name already holds another commit, e.g. an agent's own push: never forced); a human opens and merges the
 pull request. The record's pins stay valid, since the commit is the same in both places.
 
 Each run, for every staged repository:
@@ -198,9 +199,20 @@ def main() -> None:
             if name not in repos or done.get(key) == code:
                 continue
             copy, home = repos[name]
-            there = git(None, "ls-remote", home, f"refs/heads/hive/{task}", check=False).stdout.split()
-            if there and there[0] == code:              # already in its home (pushed there before the hive staged it)
+            # The branch in its home: hive/<task>, or hive/<task>-r2, -r3... when that name already holds something
+            # else (an agent's own push that skipped the hive, an earlier result): never forced, never overwritten.
+            names = [f"hive/{task}"] + [f"hive/{task}-r{n}" for n in range(2, 21)]
+            there = {}
+            for line in git(None, "ls-remote", home, f"refs/heads/hive/{task}*", check=False).stdout.splitlines():
+                sha, ref = line.split()
+                if ref.removeprefix("refs/heads/") in names:
+                    there[ref.removeprefix("refs/heads/")] = sha
+            if code in there.values():                  # already in its home (pushed there before the hive staged it)
                 done[key] = code
+                continue
+            head = next((n for n in names if n not in there), None)
+            if not head:
+                alert(key, f"publisher: {task}'s branch names in {name} (hive/{task} to -r20) are all taken: not published")
                 continue
             if git(copy, "cat-file", "-e", f"{code}^{{commit}}", check=False).returncode:
                 alert(key, f"publisher: {task}'s reviewed commit {code[:10]} isn't in the hive copy of {name}: not published")
@@ -215,7 +227,6 @@ def main() -> None:
                 alert(f"nokey:{name}", f"publisher: no push key for {name} (keys/{name} or keys/default): its reviewed "
                                        f"results stay in the hive copy")
                 continue
-            head = f"hive/{task}"
             if a.dry_run:
                 print(f"would publish {name} {code[:10]} to {push_url(home)} {head}")
                 continue
@@ -229,7 +240,9 @@ def main() -> None:
                 continue
             done[key] = code
             warned.pop(key, None)
-            alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}). "
+            taken = f" ({there[f'hive/{task}'][:10]} was already on hive/{task}: left as it is)" \
+                if head != f"hive/{task}" else ""
+            alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}){taken}. "
                        f"Open the pull request: {compare_link(home, pr_branch(copy, r['base']), head)}")
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(state, indent=1))

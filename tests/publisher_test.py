@@ -131,9 +131,21 @@ def main():
     # a reviewed commit the copy doesn't have
     results.append({"task": "t-4", "repository": "app", "code": "1" * 40, "base": base})
     assert "isn't in the hive copy" in run("--keys", str(keys), r"--deny=-100\d{10}")
+
+    # hive/<task> in the home already holds something else (t-2026-10-28-readme-flags: the agent pushed there
+    # itself): published beside it as hive/<task>-r2, never forced; another task's branch with a longer name and
+    # the same commit doesn't count as published
+    sh("git", "push", "-q", str(home), f"{other}:refs/heads/hive/t-6", cwd=work)
+    sh("git", "push", "-q", str(home), f"{good}:refs/heads/hive/t-60", cwd=work)
+    results.append({"task": "t-6", "repository": "app", "code": good, "base": base})
+    out = run("--keys", str(keys), r"--deny=-100\d{10}")
+    assert "Reviewed and published: t-6 → app hive/t-6-r2" in out and "already on hive/t-6" in out, out
+    assert sh("git", "-C", str(home), "rev-parse", "hive/t-6") == other, "the agent's own push is left as it is"
+    assert sh("git", "-C", str(home), "rev-parse", "hive/t-6-r2") == good
+    assert run("--keys", str(keys), r"--deny=-100\d{10}") == "", "published once"
     print("PASSED: copy made and mirrored without hive/*; first run only records; staged beside, never over; "
           "no key reported once; reviewed commit published once with its PR target; secrets and denied lines "
-          "kept back; a missing commit reported")
+          "kept back; a missing commit reported; a taken branch name published beside, never forced")
 
 
 if __name__ == "__main__":
