@@ -21,11 +21,13 @@ Each run, for every staged repository:
 Keys: the push to a home uses DIR/<repository> (e.g. a deploy key with write access to that repository only),
 else DIR/default; an https home is pushed over ssh (git@host:owner/name.git). Without a key the repository is
 only mirrored, and an alert says so once. Alerts are printed, and with --say each is also passed to CMD as its
-last argument (e.g. hive-bridge's telegram-say.py). Reads the record as the supervisor; state in
+last argument (e.g. hive-bridge's telegram-say.py); a published result's also with HIVE_TASK=<task> in its
+environment, so the PR link can go where the task was asked for. Reads the record as the supervisor; state in
 WORK_DIR/.publisher.json. Run it from a timer, e.g. every 2 minutes.
 """
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
@@ -172,13 +174,14 @@ def main() -> None:
     first = "published" not in state
     done, warned = state.setdefault("published", {}), state.setdefault("warned", {})
 
-    def alert(key: str, msg: str) -> None:
+    def alert(key: str, msg: str, task: str | None = None) -> None:
         if warned.get(key) == msg:
             return
         warned[key] = msg
         print(msg)
         if a.say:
-            subprocess.run([*shlex.split(a.say), msg], check=False)
+            env = {**os.environ, "HIVE_TASK": task} if task else None
+            subprocess.run([*shlex.split(a.say), msg], check=False, env=env)
 
     for name, (copy, home) in sorted(repos.items()):
         try:
@@ -243,7 +246,7 @@ def main() -> None:
             taken = f" ({there[f'hive/{task}'][:10]} was already on hive/{task}: left as it is)" \
                 if head != f"hive/{task}" else ""
             alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}){taken}. "
-                       f"Open the pull request: {compare_link(home, pr_branch(copy, r['base']), head)}")
+                       f"Open the pull request: {compare_link(home, pr_branch(copy, r['base']), head)}", task)
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(state, indent=1))
 

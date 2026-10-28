@@ -143,9 +143,18 @@ def main():
     assert sh("git", "-C", str(home), "rev-parse", "hive/t-6") == other, "the agent's own push is left as it is"
     assert sh("git", "-C", str(home), "rev-parse", "hive/t-6-r2") == good
     assert run("--keys", str(keys), r"--deny=-100\d{10}") == "", "published once"
+
+    # --say gets the alert as its last argument, and a published result's task as HIVE_TASK (the PR link can go
+    # back where the task was asked for)
+    said = TMP / "said"
+    sh("git", "push", "-q", str(copy), f"{other}:refs/heads/hive/t-7", cwd=work)
+    results.append({"task": "t-7", "repository": "app", "code": other, "base": base})
+    run("--keys", str(keys), r"--deny=-100\d{10}", "--say", f"sh -c 'echo \"$HIVE_TASK|$1\" >> {said}' say")
+    assert said.read_text().startswith("t-7|Reviewed and published: t-7"), said.read_text()
     print("PASSED: copy made and mirrored without hive/*; first run only records; staged beside, never over; "
           "no key reported once; reviewed commit published once with its PR target; secrets and denied lines "
-          "kept back; a missing commit reported; a taken branch name published beside, never forced")
+          "kept back; a missing commit reported; a taken branch name published beside, never forced; --say given the "
+          "published task as HIVE_TASK")
 
 
 if __name__ == "__main__":
