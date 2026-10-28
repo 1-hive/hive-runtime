@@ -47,8 +47,23 @@ def main():
         raise AssertionError("absent must fail")
     except m.Failed as e:
         assert "no clone of absent found" in str(e) and "absent.git" in str(e), e
+
+    # The work on a task: the task's branch in whichever clone has it (t-2026-10-28-readme-flags: the agent
+    # committed in a second clone while the hive read the first, which stayed at the base), else HEAD.
+    first = root / "work" / "deep" / "code"
+    sh("git", "-C", str(first), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "base")
+    base = subprocess.run(["git", "-C", str(first), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    assert h.work("code", "t-x") == (str(first), base), "no task branch anywhere: the clone's HEAD"
+    second = root / "work" / "code-copy"
+    sh("git", "clone", "-q", str(first), str(second))
+    sh("git", "-C", str(second), "remote", "set-url", "origin", str(tmp / "code.git"))
+    sh("git", "-C", str(second), "checkout", "-q", "-b", "hive/t-x")
+    sh("git", "-C", str(second), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "work")
+    sh("git", "-C", str(second), "checkout", "-q", "-")
+    work = subprocess.run(["git", "-C", str(second), "rev-parse", "hive/t-x"], capture_output=True, text=True).stdout.strip()
+    assert h.work("code", "t-x") == (str(second), work), h.work("code", "t-x")
     print("PASSED: clones found by remote (file and path forms, nested, node_modules skipped), registry updated, "
-          "remembered across restarts, a missing clone explained")
+          "remembered across restarts, a missing clone explained, a task's work found on its branch in any clone")
 
 
 if __name__ == "__main__":

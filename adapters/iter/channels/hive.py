@@ -168,6 +168,20 @@ class Hive:
         fetch URLs in the registry. A found clone is remembered (.runtime/hive/repos.json)."""
         if repo in self.repos:
             return self.repos[repo]
+        hits = self.search(repo)
+        if not hits:
+            raise Failed(f"no clone of {repo} found (looked under {', '.join(self.c.get('repo_search') or [str(ROOT)])}): "
+                         f"clone {self.reg['repositories'][repo]['fetch_urls'][0]} there, or name it under \"repos\" "
+                         f"in the sidecar's config")
+        self.repos[repo] = hits[0]
+        found = json.loads((RUN / "repos.json").read_text()) if (RUN / "repos.json").is_file() else {}
+        (RUN / "repos.json").write_text(json.dumps({**found, repo: hits[0]}, indent=1))
+        self.write_registry()
+        return hits[0]
+
+    def search(self, repo):
+        """Every git folder under config's "repo_search" folders (default: the agent's folder) whose remote is one
+        of the repository's fetch URLs in the registry: a folder named like it first, then the shallowest."""
         spec = self.reg["repositories"].get(repo)
         if not spec:
             raise Failed(f"{repo} isn't in the hive's registry")
@@ -184,15 +198,19 @@ class Hive:
                     if want & {_norm_url(u) for u in urls[1::3]}:
                         hits.append(d)
                     sub[:] = [x for x in sub if x != ".git"]
-        if not hits:
-            raise Failed(f"no clone of {repo} found (looked under {', '.join(self.c.get('repo_search') or [str(ROOT)])}): "
-                         f"clone {spec['fetch_urls'][0]} there, or name it under \"repos\" in the sidecar's config")
-        hits.sort(key=lambda d: (Path(d).name.lower() != repo, len(d)))   # a folder named like it, then the shallowest
-        self.repos[repo] = hits[0]
-        found = json.loads((RUN / "repos.json").read_text()) if (RUN / "repos.json").is_file() else {}
-        (RUN / "repos.json").write_text(json.dumps({**found, repo: hits[0]}, indent=1))
-        self.write_registry()
-        return hits[0]
+        return sorted(hits, key=lambda d: (Path(d).name.lower() != repo, len(d)))
+
+    def work(self, repo, tid):
+        """The agent's work on a task in a repository, as (clone, commit): the tip of the task's branch
+        (hive/<task>) in its clone, or else in any other clone of the repository the search finds (an agent may
+        keep several and commit in another one than the hive found first); else its clone's HEAD."""
+        clone = self.clone(repo)
+        ref = f"refs/heads/hive/{tid}^{{commit}}"
+        for c in [clone] + [d for d in self.search(repo) if d != clone]:
+            tip = self.git(c, "rev-parse", "-q", "--verify", ref, check=False).strip()
+            if tip:
+                return c, tip
+        return clone, self.git(clone, "rev-parse", "HEAD").strip()
 
     def run(self, *cmd, cwd=None, check=True):
         r = subprocess.run(cmd, cwd=cwd, env=self.env, capture_output=True, text=True, timeout=300)
@@ -491,7 +509,8 @@ def do(h, req):
             except Failed as e:
                 raise Failed(f"accepted, but {e}; you can't post a result for {r} until then (accept again after cloning)")
         (TASKS / f"{tid}.json").write_text(json.dumps({"base": base, "accepted_at": time.time()}))
-        return f"accepted {tid}" + (f"; base {', '.join(f'{r} {c[:12]}' for r, c in base.items())}" if base else "")
+        return f"accepted {tid}" + (f"; base {', '.join(f'{r} {c[:12]} (the hive reads {h.clone(r)})' for r, c in base.items())}; "
+                                    f"commit on branch hive/{tid} there" if base else "")
     if action in ("progress", "checkpoint"):
         if not text:
             raise Failed("a report needs text")
@@ -517,9 +536,12 @@ def do(h, req):
         if f.is_file():
             base = json.loads(f.read_text()).get("base", {})
         for r in (t.get("ext") or {}).get("repos") or []:
-            clone = h.clone(r)
-            head = h.git(clone, "rev-parse", "HEAD").strip()
+            clone, head = h.work(r, tid)
             base[r] = base_for(h, clone, head, base.get(r), start_tip(h, clone, r, t))   # none recorded: the clone came later
+            if head == base[r]:
+                raise Failed(f"no work to post for {r}: {clone}, where the hive reads {r}, is at the task's base "
+                             f"{head[:12]}, and no clone of {r} it can find has a branch hive/{tid}. Commit your work "
+                             f"on hive/{tid} in a clone the hive reads, then post the result again")
             if hive_copy(h, r):
                 stage(h, clone, head, r, tid)             # staged repository: the hive publishes it after review
             elif not pushed(h, clone, head, r):
