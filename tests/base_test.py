@@ -33,10 +33,10 @@ def main():
                 "workspace": {"repository": "workspace", "clone": str(tmp / "ws"), "branch": "main"}})
     assert m.default_tip(h, str(c)) == m1, "accept: the default branch, not the clone's HEAD"
     sh("git", "checkout", "-q", "-b", "hive/new", m1, cwd=c); new = commit("the new task")
-    assert m.base_for(h, str(c), new, m1) == m1, "work from main: the recorded base stands"
-    assert m.base_for(h, str(c), new, old) == m1, "a base the work doesn't contain: where it left main"
+    assert m.base_for(h, str(c), new, m1, m1) == m1, "work from main: the recorded base stands"
+    assert m.base_for(h, str(c), new, old, m1) == m1, "a base the work doesn't contain: where it left main"
     sh("git", "checkout", "-q", "hive/old", cwd=c); on_old = commit("built on the earlier task")
-    assert m.base_for(h, str(c), on_old, m1) == m1, "work built on another branch still descends from main's tip"
+    assert m.base_for(h, str(c), on_old, m1, m1) == m1, "work built on another branch still descends from main's tip"
     print("PASSED: base at accept = the default branch; a recorded base the work doesn't contain is repaired at result")
 
 
