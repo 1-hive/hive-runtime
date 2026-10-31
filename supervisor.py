@@ -15,7 +15,10 @@ for each task a worker holds, applies the ladder:
    connection, the 90-minute limit, or unknown, and how long it ran); unless it hit a usage or quota limit: then the dispatcher relaunches
    it (the launcher holds that pool, so the router picks another or waits), and only after
    MAX_REVIEW_LIMITS such ends on the same result is it escalated, to the operator (`other`).
-5. An active goal past a budget dimension              -> goal.escalated to the operator
+5. A worker task assigned but never launched        -> task.escalated to the chief of
+   staff (`stuck`): at once when the dispatcher kept a launcher refusal (an order's bad
+   `Route facts:` line), else past the acceptance window.
+6. An active goal past a budget dimension              -> goal.escalated to the operator
    (`budget_exceeded`), once per budget: usd_micros and tokens against the goal's `spent`,
    wall_clock_seconds against the time since approval. Raising the budget re-arms it.
 
@@ -54,6 +57,7 @@ import hive_paths as hp
 ROOT = hp.WORK_DIR
 ROUTE = ROOT / ".route"
 HOME = ROOT / ".supervisor"
+REFUSED = ROOT / ".dispatcher" / "refused.json"   # the dispatcher's refused worker launches
 WS = HOME / "workspace"
 LAUNCH = Path(__file__).resolve().parent / "launch-task.sh"
 REGISTRY_SRC = hp.DEPLOY_DIR / "registry.json"
@@ -448,6 +452,27 @@ def handled(task: str, esc: dict) -> bool:
                for e in events)
 
 
+def never_launched(t: dict, now: float, dry: bool) -> None:
+    """A worker task assigned but never launched: escalate it to the chief of staff, with the launcher's
+    reason when the dispatcher kept one (REFUSED). A refusal is escalated at once; with none, only past
+    the acceptance window. After an escalation or its resolution, the clock starts again."""
+    task, accept = t["id"], ((t.get("ext") or {}).get("lease") or {}).get("accept_within_seconds") or 0
+    try:
+        refusal = json.loads(REFUSED.read_text()).get(task)
+    except (OSError, ValueError):
+        refusal = None
+    assigned = ts(t.get("assigned_at")) or now
+    if not refusal and now - assigned <= accept + GRACE:
+        return
+    since = max(assigned, last_escalation(json.loads(hive("task", task))["events"]))
+    if refusal and refusal["at"] < since or not refusal and now - since <= accept + GRACE:
+        return
+    reason = (f"the worker can't be launched; fix it (an order: push the fix, the launcher pulls it), then resolve "
+              f"this escalation. Launcher (rc {refusal['rc']}): {refusal['reason'][-280:]}"
+              if refusal else f"assigned {int((now - assigned) / 60)} min ago and never launched (no attempt in the task folder)")
+    emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck", "reason": reason[:500]}, dry=dry)
+
+
 BUDGETS = HOME / "budget-escalated.json"   # goal -> the budget it was last escalated for
 
 
@@ -521,7 +546,9 @@ def supervise(t: dict, now: float, dry: bool) -> None:
         return
     att = latest_attempt(task, "worker")
     if att is None:
-        return   # launched by hand, not by the launcher: nothing to act on
+        if t["status"] == "assigned" and t.get("owner", "").startswith("worker."):
+            never_launched(t, now, dry)
+        return   # otherwise launched by hand, not by the launcher: nothing to act on
     n, pid = att
     last = ts((t.get("last_activity") or {}).get("at")) or ts(t.get("assigned_at")) or now
     pid_start = (ROUTE / task / f"worker.{n}.pid").stat().st_mtime

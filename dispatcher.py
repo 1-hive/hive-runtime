@@ -5,7 +5,9 @@ Deterministic, no model (1-hive PLAN, Phase E items 1 and 2). Every tick it read
 as actor `dispatcher` (class coordinator, its own key) and:
 
 - **Workers.** For each task `assigned` to a worker whose task folder has no attempt yet, it
-  writes the kickoff from the record and launches the owner (launch-task.sh). For each
+  writes the kickoff from the record and launches the owner (launch-task.sh). A launch the
+  launcher refuses (e.g. a bad `Route facts:` line in the order) is retried every RETRY seconds
+  and kept in .dispatcher/refused.json; the supervisor escalates it to the chief of staff. For each
   `blocked` task answered since its block (`task.answered`) whose worker isn't running, it
   relaunches the owner to read the answer, unblock and continue. The chief of staff only
   creates and assigns tasks and answers questions; restarts stay with the supervisor.
@@ -51,6 +53,7 @@ REVIEWERS = tuple(r.strip() for r in os.environ.get("HIVE_REVIEWERS", "").split(
     or ("reviewer.codex.1", "reviewer.claude.1")   # in order of preference (HIVE_REVIEWERS overrides)
 RETRY = 600
 ROUTE = ROOT / ".route"
+REFUSED = HOME / "refused.json"   # task -> why its worker launch was refused (the supervisor reads it)
 
 WORKER_KICKOFF = """You are **{owner}** in the 1-hive record, assigned task **{task}** ("{title}"; goal `{goal}`, project `{project}`). You run in your own container.
 
@@ -205,10 +208,26 @@ def launch_worker(t: dict, state: dict, text: str, dry: bool, retry_at: dict, wh
     r = subprocess.run([str(LAUNCH), "worker", task, t["owner"], str(path)], capture_output=True, text=True,
                        env={**os.environ, **({"EXTRA_REPOS": extra} if extra else {})})
     log(f"launch worker {task} ({why}): rc={r.returncode} {r.stdout.strip()[-200:]} {r.stderr.strip()[-300:]}")
+    note_refusal(task, r)
     if r.returncode != 0:
         retry_at[key] = time.time() + RETRY
     else:
         done.write_text(json.dumps([*launched, key][-1000:]))
+
+
+def note_refusal(task: str, r: subprocess.CompletedProcess) -> None:
+    """Keep why the task's worker couldn't be launched (REFUSED; cleared by a launch that works). The
+    dispatcher may not escalate (class coordinator); the supervisor escalates it to the chief of staff."""
+    try:
+        refused = json.loads(REFUSED.read_text())
+    except (OSError, ValueError):
+        refused = {}
+    if r.returncode == 0:
+        if refused.pop(task, None) is None:
+            return
+    else:
+        refused[task] = {"at": time.time(), "rc": r.returncode, "reason": r.stderr.strip()[-400:]}
+    REFUSED.write_text(json.dumps(refused))
 
 
 def fields(t: dict, state: dict) -> dict:
