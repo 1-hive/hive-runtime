@@ -3,12 +3,12 @@ import os
 import time
 from pathlib import Path
 
-DESCRIPTION = ("Hive record actions; the hive channel tells you of tasks. action: propose (a task someone asked "
-               "for in chat: text = title line, then what is wanted; extra = where, e.g. telegram:<chat>/<msg>), "
-               "accept, progress or checkpoint (text), block (text = question; extra = decision, information, access "
-               "or external), unblock, result (text = report; push code first), review (text = findings; extra = "
-               "passed, failed or needs_information). task = id (empty: your open task). Outcomes come on the hive "
-               "channel.")
+DESCRIPTION = ("Hive record actions; the hive channel tells you of tasks. action: propose (a task asked for in "
+               "chat: text = title, then what is wanted; extra = where, telegram:<chat>/<msg>), accept, "
+               "progress, checkpoint (text), block (text = question; extra = decision, information, access, "
+               "external), unblock, result (text = report, starting ## Summary for the asker; push code first), "
+               "review (text = findings; extra = passed, failed, needs_information). task = id (empty: your open "
+               "task). Outcomes: hive channel.")
 
 ACTIONS = ("propose", "accept", "progress", "checkpoint", "block", "unblock", "result", "review")
 

@@ -8,7 +8,8 @@
     hive-task progress   <task> <text>            a short report (also: checkpoint)
     hive-task block      <task> <needs> <text>    a question; needs = decision|information|access|external
     hive-task unblock    <task>
-    hive-task result     <task> <text>            the result report; push your code first
+    hive-task result     <task> <text>            the result report, opening with ## Summary (1-2 plain
+                                                  paragraphs for the asker); push your code first
     hive-task review     <task> <verdict> <text>  verdict = passed|failed|needs_information
 
 Config: $HIVE_TASK_CONFIG, else ~/.hive/config.json (the same file as the Iter adapter's, README.md).

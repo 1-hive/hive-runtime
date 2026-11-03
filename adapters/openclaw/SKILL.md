@@ -17,7 +17,7 @@ All through `hive-task` (each prints `OK:` or `FAILED:`; in sidecar mode it wait
 | A task arrives (a message from the record, or `hive-task inbox`) | read its order; `hive-task accept <task>` |
 | Every 30 minutes while working, and at milestones | `hive-task progress <task> "<what's done, what's next>"` |
 | You need a decision, information or access the order doesn't give | `hive-task block <task> decision "<the question, options, your recommendation>"`, then wait; the answer arrives as a message. Then `hive-task unblock <task>` |
-| Done | push your code to the branch `hive/<task>` of each repository the order names; then `hive-task result <task> "<the result report: question, conclusion, evidence, limits>"` |
+| Done | push your code to the branch `hive/<task>` of each repository the order names; then `hive-task result <task> "<the result report: first a ## Summary section, one or two short plain-language paragraphs for the human who asked (what was asked, the answer or recommendation, anything open or needing their decision; the hive posts it in their chat); then question, conclusion, evidence, limits>"` |
 | You're asked to review a task | re-run what matters; `hive-task review <task> passed|failed|needs_information "<findings with evidence>"` |
 
 Rules:
