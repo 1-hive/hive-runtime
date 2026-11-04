@@ -3,8 +3,10 @@
 
 A thin stdio MCP server over the `hive` and `hive-pin` CLIs, so it signs as whoever runs
 it (HIVE_URL, HIVE_ID, HIVE_KEY_FILE, HIVEPIN_REPOSITORY_REGISTRY_PATH in its environment):
-in 1-hive, `cos`, inside its own container. Reads: board, inbox, state, task, goal, events.
-Writes: `emit`, which mints the pins it refers to from committed, pushed workspace or code
+in 1-hive, `cos`, inside its own container. Reads: board, inbox, state, task, goal, events,
+and `floor`: what each agent's process is doing now, from the Floor (hive-bridge floor.py, at
+HIVE_FLOOR_URL, default http://127.0.0.1:8476, open from loopback), which holds the agents' beacons:
+not the record, so not authoritative, but the only place a stopped or failing agent shows. Writes: `emit`, which mints the pins it refers to from committed, pushed workspace or code
 paths. Everything else (writing goal and order files, git) the chief of staff does with
 its ordinary tools.
 
@@ -17,6 +19,7 @@ import json
 import os
 import subprocess
 import tempfile
+import urllib.request
 
 try:   # mcp 2.x
     from mcp.server.mcpserver import MCPServer
@@ -73,6 +76,37 @@ def events(after: int = 0, event_type: str = "", task_id: str = "", goal_id: str
             args += [flag, v]
     lines = run(*args).splitlines()
     return "\n".join(lines[-max(1, min(limit, 1000)):])
+
+
+FLOOR_URL = os.environ.get("HIVE_FLOOR_URL", "http://127.0.0.1:8476").rstrip("/")
+
+
+def floor_get(path: str) -> dict:
+    with urllib.request.urlopen(FLOOR_URL + path, timeout=20) as r:
+        return json.load(r)
+
+
+@mcp.tool()
+def floor(actor: str = "") -> str:
+    """What each agent's process is doing now (the Floor, from the agents' beacons; the record can't show it):
+    whether it is working, idle, offline or can't run and why (e.g. a reviewer out of credits), and what it
+    owes. Also what the Floor puts before the operators ("needs"). With `actor` (e.g. "reviewer.astra"), that
+    agent only, with its recent events. Not the record: report it as what the agent's runner says, and act
+    through the record as usual."""
+    try:
+        if actor:
+            b = floor_get("/api/bot/" + actor)
+            keep = ("id", "name", "class", "machine", "model", "now", "plate", "queued", "beacon_age", "note", "events")
+            out = {k: b[k] for k in keep if k in b}
+            out["events"] = (out.get("events") or [])[-15:]
+            return json.dumps(out, ensure_ascii=False, default=str)
+        bots = floor_get("/api/bots")["bots"]
+        needs = floor_get("/api/needs")["needs"]
+        keep = ("id", "name", "class", "now", "plate", "beacon_age")
+        return json.dumps({"bots": [{k: b[k] for k in keep if k in b} for b in bots], "needs": needs},
+                          ensure_ascii=False, default=str)
+    except Exception as e:
+        return f"the Floor at {FLOOR_URL} didn't answer: {type(e).__name__}: {e}"
 
 
 @mcp.tool()

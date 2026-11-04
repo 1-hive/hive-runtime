@@ -20,7 +20,7 @@ A run that gives no verdict is retried later; nothing is recorded for it.
 
 With "beacon": {"url": ...} in the config (adapters/iter/README.md, Beacons), it posts a signed beacon of
 kind "reviewer" every 30 s: "reviewing" (the task and since when) while a review command runs, and
-"problem" after a run that timed out, couldn't start or gave no verdict (the output's last line,
+"problem" after a run that timed out, couldn't start or gave no verdict (the output's last error line, else its last line,
 cut to 200 characters), cleared by the next run that gives one.
 """
 import importlib.util
@@ -159,7 +159,11 @@ def main():
                 m = VERDICT.findall(out)
                 if not m:
                     mod.log(f"review of {t['id']}: no verdict in the output (rc {r.returncode}); retry in {retry}s")
-                    last = next((x.strip() for x in reversed(out.splitlines()) if x.strip()), "no output")
+                    # the last error line if there is one (Codex ends with a token count after its "ERROR: ..."),
+                    # else the last line
+                    lines = [x.strip() for x in out.splitlines() if x.strip()]
+                    last = next((x for x in reversed(lines) if re.match(r"(?i)\W*(error|fatal)\b", x)),
+                                lines[-1] if lines else "no output")
                     doing["problem"] = f"no verdict from the review of {t['id']} (rc {r.returncode}): {last}"[:200]
                     continue
                 doing["problem"] = None
