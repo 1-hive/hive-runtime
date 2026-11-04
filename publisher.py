@@ -24,6 +24,12 @@ only mirrored, and an alert says so once. Alerts are printed, and with --say eac
 last argument (e.g. hive-bridge's telegram-say.py); a published result's also with HIVE_TASK=<task> in its
 environment, so the PR link can go where the task was asked for. Reads the record as the supervisor; state in
 WORK_DIR/.publisher.json. Run it from a timer, e.g. every 2 minutes.
+
+With --github-token FILE (a token that may open pull requests on the homes, e.g. the agents' own GitHub account's),
+it also opens the pull request itself: into the branch holding the result's base, titled with the task's title, the
+body the report's "## Summary" section and where the report and review are. The message then gives the PR's link;
+a PR already open for that branch is reused. Without a token, or when GitHub refuses, it gives the compare link as
+before. Merging stays with a human.
 """
 import argparse
 import json
@@ -33,6 +39,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import hive_paths as hp
@@ -51,9 +59,14 @@ def events(etype: str) -> list[dict]:
 
 
 def passed_results() -> list[dict]:
-    """Each result whose review passed: {task, repository, code, base}, oldest first."""
-    passed = {(e.get("data") or {}).get("result_event") for e in events("review.recorded")
-              if (e.get("data") or {}).get("verdict") == "passed"}
+    """Each result whose review passed: {task, repository, code, base, title, report, review}, oldest first
+    (report and review: their pins, or None)."""
+    passed = {}
+    for e in events("review.recorded"):
+        d = e.get("data") or {}
+        if d.get("verdict") == "passed":
+            passed[d.get("result_event")] = next((r.get("pin") for r in e.get("refs") or [] if r.get("rel") == "review"), None)
+    titles = {e.get("task"): (e.get("data") or {}).get("title", "") for e in events("task.created")}
     out = []
     for e in events("task.result_posted"):
         if e["event_id"] not in passed:
@@ -63,9 +76,11 @@ def passed_results() -> list[dict]:
             pin = r.get("pin") or {}
             if r.get("rel") in ("code", "base") and pin.get("commit_oid"):
                 pins.setdefault(pin["repository"], {})[r["rel"]] = pin["commit_oid"].split(":", 1)[-1]
+        report = next((r.get("pin") for r in e.get("refs") or [] if r.get("rel") == "result"), None)
         for repo, p in pins.items():
             if "code" in p:
-                out.append({"task": e.get("task"), "repository": repo, "code": p["code"], "base": p.get("base")})
+                out.append({"task": e.get("task"), "repository": repo, "code": p["code"], "base": p.get("base"),
+                            "title": titles.get(e.get("task"), ""), "report": report, "review": passed[e["event_id"]]})
     return out
 
 
@@ -156,6 +171,61 @@ def compare_link(home: str, branch: str | None, head: str) -> str:
     return f"{home} branch {head}" + (f" into {branch}" if branch else "")
 
 
+def pin_text(pin: dict | None) -> str:
+    """A workspace pin's file at its commit (the hive's workspace repository), or ""."""
+    ws = os.environ.get("HIVE_WORKSPACE_REPO")
+    if not pin or not ws or not pin.get("path") or not pin.get("commit_oid"):
+        return ""
+    r = git(None, f"--git-dir={ws}", "show", f"{pin['commit_oid'].split(':', 1)[-1]}:{pin['path']}", check=False)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def summary_of(report: str) -> str:
+    """The report's "## Summary" section (hive rule: one or two paragraphs for the human who asked), or ""."""
+    m = re.search(r"^##\s+Summary\s*$(.*?)(?=^#{1,2}\s|\Z)", report, re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def pr_body(r: dict, code: str) -> str:
+    summary = summary_of(pin_text(r.get("report"))) or "(The report has no ## Summary section: see the report.)"
+    where = lambda pin: f"`{pin['path']}` in the hive workspace" if pin and pin.get("path") else "the record"
+    return (f"{summary[:6000]}\n\n---\nHive task `{r['task']}`, reviewed commit `{code[:12]}`. "
+            f"Report: {where(r.get('report'))}. Review (passed): {where(r.get('review'))}.\n\n"
+            "Opened by the hive's publisher after the review passed. **Merge with a merge commit** (not squash or "
+            "rebase), so the reviewed commit stays in the history; if it shouldn't go in, close this PR.")
+
+
+def open_pr(token: str, home: str, head: str, base: str | None, title: str, body: str) -> tuple[str | None, str]:
+    """Open (or find the open) pull request head -> base on a GitHub home: (its URL, None) or (None, why not)."""
+    m = re.match(r"^https://github\.com/([^/]+)/([^/]+?)(\.git)?/?$", home)
+    if not m or not base:
+        return None, "not a GitHub home" if not m else "no branch holds the result's base"
+    owner, name = m.group(1), m.group(2)
+    api = f"{os.environ.get('HIVE_GITHUB_API', 'https://api.github.com')}/repos/{owner}/{name}/pulls"
+    hdr = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "User-Agent": "hive-publisher"}
+
+    def call(url: str, data: dict | None = None):
+        req = urllib.request.Request(url, data=json.dumps(data).encode() if data else None, headers=hdr,
+                                     method="POST" if data else "GET")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.load(resp)
+    try:
+        return call(api, {"title": title[:250], "head": head, "base": base, "body": body,
+                          "maintainer_can_modify": True})["html_url"], ""
+    except urllib.error.HTTPError as e:
+        why = e.read().decode(errors="replace")[:300]
+        if e.code == 422:   # one already open for this branch: use it
+            try:
+                found = call(f"{api}?state=open&head={owner}:{head}")
+                if found:
+                    return found[0]["html_url"], ""
+            except (urllib.error.URLError, ValueError, KeyError, IndexError):
+                pass
+        return None, f"GitHub said {e.code}: {why}"
+    except (urllib.error.URLError, ValueError, KeyError, TimeoutError) as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--registry", required=True)
@@ -163,6 +233,8 @@ def main() -> None:
     ap.add_argument("--say", help="command that sends an alert, given as its last argument")
     ap.add_argument("--deny", action="append", default=[], metavar="REGEX",
                     help="also refuse to publish a result adding a line that matches (repeatable)")
+    ap.add_argument("--github-token", metavar="FILE",
+                    help="a GitHub token that may open pull requests on the homes: open them, not only link them")
     ap.add_argument("--init-only", action="store_true", help="create and mirror the hive copies, publish nothing")
     ap.add_argument("--dry-run", action="store_true", help="say what would be published, push nothing")
     a = ap.parse_args()
@@ -170,6 +242,7 @@ def main() -> None:
     repos = staged(reg)
     keys = Path(a.keys) if a.keys else None
     deny = [re.compile(d) for d in a.deny]
+    gh_token = Path(a.github_token).read_text().strip() if a.github_token and Path(a.github_token).is_file() else ""
     state = json.loads(STATE.read_text()) if STATE.is_file() else {}
     first = "published" not in state
     done, warned = state.setdefault("published", {}), state.setdefault("warned", {})
@@ -245,8 +318,15 @@ def main() -> None:
             warned.pop(key, None)
             taken = f" ({there[f'hive/{task}'][:10]} was already on hive/{task}: left as it is)" \
                 if head != f"hive/{task}" else ""
-            alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}){taken}. "
-                       f"Open the pull request: {compare_link(home, pr_branch(copy, r['base']), head)}", task)
+            into = pr_branch(copy, r["base"])
+            url, why = open_pr(gh_token, home, head, into, r.get("title") or task, pr_body(r, code)) if gh_token else (None, "")
+            if url:
+                alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}){taken}. "
+                           f"Pull request into {into}, ready to review and merge (merge commit): {url}", task)
+            else:
+                alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}){taken}. "
+                           f"Open the pull request: {compare_link(home, into, head)}"
+                           + (f" (couldn't open it myself: {why})" if why else ""), task)
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(state, indent=1))
 
