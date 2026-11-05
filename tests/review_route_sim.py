@@ -118,6 +118,9 @@ check("strong order, Astra can't run: Fable (another model by the author's maker
       run(task("s2", "strong.md")) == ["reviewer.claude"], logs[-3:])
 check("standard order: Fable first", run(task("m1", "standard.md")) == ["reviewer.claude"], logs[-3:])
 check("light order: the light reviewer", run(task("l1", "light.md")) == ["reviewer.light"], logs[-3:])
+FLOOR["reviewer.light"] = "nodata"
+check("a reviewer with no beacon data yet is passed over", run(task("l2", "light.md")) == [] and "asking again" in logs[-1], logs[-2:])
+del FLOOR["reviewer.light"]
 FLOOR["reviewer.claude"] = "offline"
 check("strong order, both down: nothing assigned", run(task("s3", "strong.md")) == [], logs[-3:])
 check("... asked again later", RETRY.get("ev-s3-0000000000", 0) > time.time() and "asking again" in logs[-1], logs[-2:])

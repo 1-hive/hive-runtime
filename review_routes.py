@@ -7,8 +7,8 @@ result it asks `hive-route decide` with:
 - the task's facts: `kind: review` and the order's `Route facts:` line; the order's `Review tier:`
   line as the hint (it only raises the tier);
 - the author: the table's route whose actor is the result's author (its family and model, for RT4);
-- `unavailable`: every route whose actor the Floor (hive-bridge, HIVE_FLOOR_URL) shows can't run
-  or offline, with the Floor's reason.
+- `unavailable`: every route whose actor the Floor (hive-bridge, HIVE_FLOOR_URL) shows can't run,
+  offline or without beacon data (a reviewer not started yet), with the Floor's reason.
 
 A decision names the actor to assign. A reviewer that has been unable to run for
 HIVE_REVIEW_MOVE_SECONDS (600) while a result waits on it is decided again (`reason: reassign`),
@@ -36,7 +36,7 @@ LOG = os.environ.get("HIVE_REVIEW_ROUTE_LOG") or str(hp.WORK_DIR / ".route" / "r
 ROUTE_DIR = os.environ.get("HIVE_ROUTE_DIR") or str(hp.REPOS_DIR / "hive-route")
 FLOOR_URL = os.environ.get("HIVE_FLOOR_URL", "http://127.0.0.1:8476").rstrip("/")
 MOVE_AFTER = int(os.environ.get("HIVE_REVIEW_MOVE_SECONDS") or 600)
-DOWN = ("cantrun", "offline")    # Floor states in which an agent takes no work
+DOWN = ("cantrun", "offline", "nodata")   # Floor states in which a reviewer takes no work (nodata: no beacon yet, e.g. not started)
 
 FACT_VALUES = {"specification": ("explicit", "partial", "goal_only"), "verification": ("independent", "weak", "none"),
                "scope": ("single", "few", "many"), "consequence": ("reversible", "costly")}
