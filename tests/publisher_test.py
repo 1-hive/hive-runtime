@@ -43,6 +43,12 @@ def commit(work, name, text, msg):
 
 def main():
     pub = load("publisher", HERE / "publisher.py")
+    # sk- keys are secrets; kebab-case identifiers starting with sk- are not
+    for key in ("sk-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4", "sk-proj-" + "Ab3_dE5fG7hIjK9lMn0pQrStUvWxYz12-34Ab",
+                "sk-ant-api03-" + "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7bC9-dE1fG3AA"):
+        assert pub.SECRETS.search(f"key = '{key}'"), key
+    for name in ("sk-action-build-outcome", "sk-bound-terminals", "sk-semanticmaskcompilerversion", "sk-nfa-v1-stream-digest"):
+        assert not pub.SECRETS.search(f"(define {name} 1)"), name
     home, copy, work, keys = TMP / "home.git", TMP / "repos" / "app.git", TMP / "work-clone", TMP / "keys"
     sh("git", "init", "-q", "--bare", "-b", "main", str(home))
     sh("git", "clone", "-q", str(home), str(work))

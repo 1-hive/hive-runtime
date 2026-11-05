@@ -47,7 +47,9 @@ import hive_paths as hp
 
 STATE = hp.WORK_DIR / ".publisher.json"
 HERE = Path(__file__).resolve().parent
-SECRETS = re.compile(r"(sk-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+# sk- keys (OpenAI, sk-proj-, sk-ant-) carry a long random run with digits; kebab-case names such as
+# sk-action-build-outcome (CeTTa's code) do not, so they are not secrets.
+SECRETS = re.compile(r"(sk-[A-Za-z0-9_-]*?(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{16,}[A-Za-z0-9_-]*|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
                      r"|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----"
                      r"|\b[0-9]{8,10}:AA[A-Za-z0-9_-]{30,}\b|AIza[0-9A-Za-z_-]{35})")
 
