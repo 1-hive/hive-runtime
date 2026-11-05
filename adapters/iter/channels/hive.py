@@ -144,7 +144,7 @@ class Hive:
         # code repository name -> the agent's clone: config's "repos", then those found earlier (find_clone)
         found = json.loads((RUN / "repos.json").read_text()) if (RUN / "repos.json").is_file() else {}
         self.repos = {**found, **conf.get("repos", {})}
-        self.reg = json.loads(Path(conf["registry"]).read_text())
+        self._reg_file, self._reg_stamp, self._reg = Path(conf["registry"]), None, None
         for name in [self.ws["repository"], *self.repos]:
             if name not in self.reg["repositories"]:
                 raise Failed(f"{name} isn't in the registry {conf['registry']}")
@@ -154,12 +154,34 @@ class Hive:
                     "HIVEPIN_REPOSITORY_REGISTRY_PATH": str(RUN / "registry.json"),
                     "GIT_OPTIONAL_LOCKS": "0"}   # only read the agent's clones: never refresh their index
 
+    @property
+    def reg(self):
+        """The hive's registry, read again whenever its file changes: a repository the operators add (new-repo.py)
+        reaches a running sidecar or reviewer without a restart. A file caught mid-write keeps the last good one."""
+        st = self._reg_file.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+        if stamp != self._reg_stamp:
+            try:
+                reg = json.loads(self._reg_file.read_text())
+                reg["repositories"]
+            except (ValueError, KeyError, TypeError):
+                if self._reg is None:
+                    raise
+                return self._reg
+            again = self._reg is not None
+            self._reg, self._reg_stamp = reg, stamp
+            if again:
+                self.write_registry()
+                log(f"registry reloaded: {len(reg['repositories'])} repositories")
+        return self._reg
+
     def write_registry(self):
         """Pins resolve commits in the registry's local_path: point it at this agent's own clones, as
         hive-runtime's launcher does for a task folder."""
         reg = json.loads(json.dumps(self.reg))
         for name, clone in [(self.ws["repository"], self.ws["clone"]), *self.repos.items()]:
-            reg["repositories"][name]["local_path"] = clone
+            if name in reg["repositories"]:
+                reg["repositories"][name]["local_path"] = clone
         (RUN / "registry.json").write_text(json.dumps(reg, indent=1))
 
     def clone(self, repo):

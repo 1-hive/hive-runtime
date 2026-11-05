@@ -62,8 +62,21 @@ def main():
     sh("git", "-C", str(second), "checkout", "-q", "-")
     work = subprocess.run(["git", "-C", str(second), "rev-parse", "hive/t-x"], capture_output=True, text=True).stdout.strip()
     assert h.work("code", "t-x") == (str(second), work), h.work("code", "t-x")
+
+    # A repository the operators register later (new-repo.py) reaches the running sidecar without a restart,
+    # with its own clones still pointed at in the per-agent registry; a file caught mid-write is ignored.
+    sh("git", "init", "-q", "--bare", str(tmp / "newer.git"))
+    sh("git", "clone", "-q", str(tmp / "newer.git"), str(root / "work" / "newer"))
+    reg["repositories"]["newer"] = {"fetch_urls": [f"file://{tmp}/newer.git"], "local_path": "/x"}
+    (tmp / "registry.json").write_text(json.dumps(reg, indent=2))
+    assert h.clone("newer") == str(root / "work" / "newer"), "a new registry entry is seen without a restart"
+    run_reg = json.loads((m.RUN / "registry.json").read_text())["repositories"]
+    assert run_reg["newer"]["local_path"] == str(root / "work" / "newer") and run_reg["code"]["local_path"] == str(first)
+    (tmp / "registry.json").write_text('{"repositories": {"half')
+    assert "newer" in h.reg["repositories"], "a broken file keeps the last good registry"
     print("PASSED: clones found by remote (file and path forms, nested, node_modules skipped), registry updated, "
-          "remembered across restarts, a missing clone explained, a task's work found on its branch in any clone")
+          "remembered across restarts, a missing clone explained, a task's work found on its branch in any clone, "
+          "a registry change seen without a restart")
 
 
 if __name__ == "__main__":
