@@ -5,6 +5,7 @@ it as a staged repository, so agents can work in it at once and their results re
     new-repo.py --registry REGISTRY.json --name NAME --github-token FILE [--owner OWNER] [--description TEXT]
                 [--keys DIR] [--copies DIR] [--clones DIR] [--registry-repo BARE.git] [--dry-run]
     new-repo.py --registry REGISTRY.json --registry-repo BARE.git --publish-only
+    new-repo.py --merge-registry FILE < OTHER_REGISTRY.json      (add OTHER's repositories that FILE lacks)
 
 Why a tool, not an agent: creating a repository needs a GitHub credential that could also push to any default
 branch, delete repositories or skip review. Agents never hold it. The chief of staff asks for a repository (a
@@ -122,7 +123,26 @@ def digest(registry: Path) -> str | None:
     return registry_digest(str(registry))
 
 
+def merge_registry(into: Path, other: dict) -> list[str]:
+    """Add to the registry file `into` every repository `other` has and it lacks (a deployment's source copy taking
+    what new-repo.py registered on the host). Existing entries are never changed. Returns the ids added."""
+    reg = json.loads(into.read_text())
+    added = sorted(set(other["repositories"]) - set(reg["repositories"]))
+    for rid in added:
+        reg["repositories"][rid] = other["repositories"][rid]
+    if added:
+        write_atomic(into, dump_registry(reg))
+    return added
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["--merge-registry"]:   # new-repo.py --merge-registry FILE < OTHER.json
+        if len(sys.argv) != 3:
+            sys.exit("usage: new-repo.py --merge-registry FILE < OTHER_REGISTRY.json")
+        added = merge_registry(Path(sys.argv[2]), json.load(sys.stdin))
+        if added:
+            print(f"registry: took {', '.join(added)}")
+        return 0
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--registry", required=True, type=Path)
     ap.add_argument("--name")

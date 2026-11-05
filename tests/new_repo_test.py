@@ -120,6 +120,13 @@ def main():
         state["token_ok"] = True
         assert run(tmp, "--publish-only") == 0
         assert subprocess.run(["git", "-C", str(tmp / "hive-registry.git"), "rev-parse", "main"], capture_output=True, text=True).stdout != head
+        # --merge-registry: a source copy takes what was registered on the host, keeps its own entries
+        src = tmp / "source.json"
+        src.write_text(json.dumps({"repositories": {"workspace": {"fetch_urls": ["mine"]}}}))
+        assert nr.merge_registry(src, json.loads((tmp / "registry.json").read_text())) == ["mettadinc", "other"]
+        got = json.loads(src.read_text())["repositories"]
+        assert got["workspace"] == {"fetch_urls": ["mine"]} and got["mettadinc"]["local_path"] == "/var/lib/hive/clones/mettadinc"
+        assert nr.merge_registry(src, json.loads((tmp / "registry.json").read_text())) == []
     print("new_repo_test: ok")
 
 
