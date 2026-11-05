@@ -52,6 +52,7 @@ json.dump(c, open(f"{nh}/reviewer.json", "w"), indent=1)
 PY
   chown "$NEW:$NEW" "$NH/reviewer.json"; chmod 600 "$NH/reviewer.json"
   sed -e "s#$FH#$NH#g" -e "s/^User=$FROM\$/User=$NEW/" -e "s/^Group=$FROM\$/Group=$NEW/" \
+      -e "s/^Description=.*/Description=reviewer runner $ACTOR (user $NEW; made by add-reviewer.sh from hive-reviewer-$FROM)/" \
       "/etc/systemd/system/hive-reviewer-$FROM.service" > "/etc/systemd/system/hive-reviewer-$NEW.service"
   systemctl daemon-reload
   echo "== $NH/reviewer.json (check actor, paths, model)"
