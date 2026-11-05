@@ -39,7 +39,12 @@ Every tool reads the same environment variables (`paths.sh` for the shell tools,
 | `HIVE_ROUTE_DIR` | `$HIVE_REPOS_DIR/hive-route` | The router's checkout |
 | `HIVE_DEFAULT_REPO` | `mtg-player` | The code repository every task folder holds; others come as `EXTRA_REPOS` |
 | `HIVE_LONG_LIVED_ACTORS` | (none) | Comma-separated actor-id patterns (`worker.*,reviewer.astra`) that are never launched or restarted: their sidecar or runner takes work from the record. The dispatcher only assigns reviews to them; the supervisor nudges, then escalates to the chief of staff, and escalates a result whose review waits over `HIVE_REVIEW_WAIT_SECONDS` (7200) |
-| `HIVE_REVIEWERS` | `reviewer.codex.1,reviewer.claude.1` | The reviewers the dispatcher assigns, in order of preference |
+| `HIVE_REVIEWERS` | `reviewer.codex.1,reviewer.claude.1` | The reviewers the dispatcher assigns, in order of preference (without a review route table, or when the router gives no route) |
+| `HIVE_REVIEW_ROUTE_TABLE` | (none) | A hive-route table (rev 21) whose review routes name their long-lived `actor`: the router picks each result's reviewer by the review's tier (the order's `Route facts:` and `Review tier:`), RT4 against the author and the Floor's view of who can run (`review_routes.py`; hive-route ROUTING.md §9.5) |
+| `HIVE_REVIEW_ROUTE_SOURCES` | (none) | The sources file naming its qualifications file (`hive-route canary accept TABLE ROUTE --no-canary`) |
+| `HIVE_REVIEW_ROUTE_LOG` | `<work>/.route/review-route-log.jsonl` | Where the review decisions are logged |
+| `HIVE_REVIEW_MOVE_SECONDS` | 600 | A routed result waiting on a reviewer the Floor has shown unable to run (or offline) this long is moved to the reviewer the router picks then |
+| `HIVE_FLOOR_URL` | `http://127.0.0.1:8476` | hive-bridge's Floor, read by the chief of staff's `floor` tool and by review routing |
 
 Two need care, because they're read outside the operator's session:
 - `git/hive-git-shell` runs as sshd's forced command, with a clean environment. A hive whose repositories aren't in `~/repos` writes `HIVE_REPOS_DIR=…` into the forced command.

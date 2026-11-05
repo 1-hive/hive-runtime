@@ -19,6 +19,13 @@ as actor `dispatcher` (class coordinator, its own key) and:
 3. if the router has no route for that reviewer now (launcher exit 3: capacity, or the
    review-family rule), tries the next one; if none can run, retries after RETRY seconds.
 
+With HIVE_REVIEW_ROUTE_TABLE (review_routes.py), a result for long-lived reviewers goes where the
+router says instead: the review's tier from the order's `Route facts:` and `Review tier:` lines, the
+first reviewer in that tier that can run (the Floor's view), and RT4 against the result's author.
+A result waiting on a reviewer the Floor has shown unable to run for HIVE_REVIEW_MOVE_SECONDS is
+moved to the reviewer the router picks then. If the router can't be asked or gives no route, the
+REVIEWERS order applies, as without a table.
+
 An assigned reviewer is relaunched (not re-assigned) when its launch never happened, or when
 its process ended without a verdict on a usage or quota limit (class `capacity`: the launcher
 then holds that pool, so the router picks another or waits; the supervisor tells the operator
@@ -43,6 +50,7 @@ import time
 from pathlib import Path
 
 import hive_paths as hp
+import review_routes as rr
 from supervisor import alive, failure_class, latest_attempt, long_lived
 
 ROOT = hp.WORK_DIR
@@ -52,6 +60,7 @@ ENV = hp.tool_env(hp.CONFIG_DIR / "agents" / "dispatcher.key", "dispatcher")
 REVIEWERS = tuple(r.strip() for r in os.environ.get("HIVE_REVIEWERS", "").split(",") if r.strip()) \
     or ("reviewer.codex.1", "reviewer.claude.1")   # in order of preference (HIVE_REVIEWERS overrides)
 RETRY = 600
+WAIT_RETRY = 300   # a routed review no reviewer can take now: ask the router again after this
 ROUTE = ROOT / ".route"
 REFUSED = HOME / "refused.json"   # task -> why its worker launch was refused (the supervisor reads it)
 
@@ -237,6 +246,65 @@ def fields(t: dict, state: dict) -> dict:
             "goal_path": (goal.get("goal_pin") or {}).get("path", "(see the order)")}
 
 
+def assign(t: dict, reviewer: str, dry: bool, why: str) -> None:
+    """Assign-only: a reviewer runner or the agent's own sidecar takes it from the record, with its own kickoff."""
+    task, res = t["id"], t["current_result"]
+    if dry:
+        log(f"DRY assign {reviewer} to {task} ({res['event_id']}), no launch; {why}")
+        return
+    ev = json.loads(hive("emit", "review.assigned", "--task", task, "--cause-event", res["event_id"], "--data",
+                         json.dumps({"reviewer": reviewer, "result_event": res["event_id"]})))
+    log(f"review.assigned {task} -> {reviewer} at position {ev['position']} (runs elsewhere; {why})")
+
+
+def routed(t: dict, dry: bool, retry_at: dict) -> bool:
+    """Assign the current result to the long-lived reviewer the router picks. False: use REVIEWERS."""
+    task, res = t["id"], t["current_result"]
+    try:
+        d = rr.decide(t)
+    except Exception as e:
+        log(f"{task}: review routing failed, using HIVE_REVIEWERS: {e}")
+        return False
+    actor = d.get("actor")
+    if d["decision"] == "route" and actor and long_lived(actor) and actor != res.get("author"):
+        assign(t, actor, dry, f"routed: {d['route_id']}, tier {d['tier']}")
+        return True
+    if d["decision"] == "wait":
+        retry_at[res["event_id"]] = time.time() + WAIT_RETRY
+        log(f"{task}: no reviewer can take it now ({rr.why(d)}); asking again in {WAIT_RETRY // 60} min")
+        return True
+    note = "" if not actor or long_lived(actor) else f", {actor} is not long-lived"
+    log(f"{task}: the router gave {rr.why(d)}{note}; using HIVE_REVIEWERS")
+    return False
+
+
+def maybe_move(t: dict, dry: bool, retry_at: dict, events: list[dict]) -> None:
+    """Move a waiting result off a routed reviewer the Floor has shown unable to run for MOVE_AFTER."""
+    task, res = t["id"], t.get("current_result") or {}
+    cur = res.get("event_id")
+    if t["status"] != "in_review" or not cur or time.time() < retry_at.get(f"move:{cur}", 0):
+        return
+    if any(e["type"] == "review.recorded" and (e.get("data") or {}).get("result_event") == cur for e in events):
+        return
+    asg = [e for e in events if e["type"] == "review.assigned" and (e.get("data") or {}).get("result_event") == cur]
+    rv = asg[-1]["data"]["reviewer"] if asg else None
+    if not rv or rv not in rr.actors() or not rr.should_move(rv):
+        return
+    try:
+        d = rr.decide(t, "reassign", moving_off=rv)
+    except Exception as e:
+        log(f"{task}: review routing failed, {rv} keeps it: {e}")
+        retry_at[f"move:{cur}"] = time.time() + WAIT_RETRY
+        return
+    actor = d.get("actor")
+    if d["decision"] == "route" and actor and actor != rv and long_lived(actor) and actor != res.get("author"):
+        assign(t, actor, dry, f"moved off {rv}, which can't run: {rr.floor_note.get(rv, '?')}; "
+                              f"routed: {d['route_id']}, tier {d['tier']}")
+        return
+    retry_at[f"move:{cur}"] = time.time() + WAIT_RETRY
+    log(f"{task}: {rv} can't run and no other reviewer can take it ({rr.why(d)}); asking again in {WAIT_RETRY // 60} min")
+
+
 def dispatch(t: dict, state: dict, dry: bool, retry_at: dict, events: list[dict]) -> None:
     task, res = t["id"], t["current_result"]
     if time.time() < retry_at.get(res["event_id"], 0):
@@ -245,15 +313,11 @@ def dispatch(t: dict, state: dict, dry: bool, retry_at: dict, events: list[dict]
     repos = (t.get("ext") or {}).get("repos") or []
     extra = " ".join(r for r in repos if r != CODE_HOME)
     again = relaunch_of(t, events)   # already assigned, not running: relaunch, don't re-assign
+    if not again and rr.enabled() and routed(t, dry, retry_at):
+        return
     for reviewer in ([again[0]] if again else [r for r in REVIEWERS if r != author]):
         if long_lived(reviewer) and not again:
-            # assign-only: a reviewer runner or the agent's own sidecar takes it from the record, with its own kickoff
-            if dry:
-                log(f"DRY assign {reviewer} to {task} ({res['event_id']}), no launch")
-                return
-            ev = json.loads(hive("emit", "review.assigned", "--task", task, "--cause-event", res["event_id"], "--data",
-                                 json.dumps({"reviewer": reviewer, "result_event": res["event_id"]})))
-            log(f"review.assigned {task} -> {reviewer} at position {ev['position']} (runs elsewhere)")
+            assign(t, reviewer, dry, "first in HIVE_REVIEWERS")
             return
         path = kickoff(t, reviewer, state)
         if dry:
@@ -279,6 +343,8 @@ def dispatch(t: dict, state: dict, dry: bool, retry_at: dict, events: list[dict]
 
 def tick(dry: bool, retry_at: dict) -> None:
     state = json.loads(hive("state"))
+    if rr.enabled():
+        rr.read_floor()
     for t in state.get("tasks", {}).values():
         try:   # one task's failure is logged, never stops the others
             handle(t, state, dry, retry_at)
@@ -308,6 +374,8 @@ def handle(t: dict, state: dict, dry: bool, retry_at: dict) -> None:
         events = json.loads(hive("task", t["id"]))["events"]
         if needs_review(t, events):
             dispatch(t, state, dry, retry_at, events)
+        elif rr.enabled():
+            maybe_move(t, dry, retry_at, events)
 
 
 def main() -> None:

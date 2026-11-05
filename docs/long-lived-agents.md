@@ -10,7 +10,7 @@ This complements One Hive's interfaces: the runtime launches and delivers, and d
 - **A chief of staff** (`cos.sh`, role doc `docs/chief-of-staff-proto-hive.md`), reached through a chat work group by hive-bridge. It is the only way work is assigned.
 - **A sidecar per agent** (`adapters/iter/sidecar.py`): holds the agent's record key, does the record and git work, and talks to the agent only through a queue folder. The agent never holds its key.
 - **A reviewer** with its own key and a different model from the workers (`adapters/reviewer/reviewer_runner.py`).
-- **The dispatcher and supervisor** in long-lived mode (`HIVE_LONG_LIVED_ACTORS`, `HIVE_REVIEWERS`): reviews assigned automatically; nudges delivered as messages, then escalation to the chief of staff; never a restart.
+- **The dispatcher and supervisor** in long-lived mode (`HIVE_LONG_LIVED_ACTORS`, `HIVE_REVIEWERS`): reviews assigned automatically (with `HIVE_REVIEW_ROUTE_TABLE`, by the router: the review's tier from the order, the first reviewer in it that can run, and a waiting review moved off a reviewer that can't); nudges delivered as messages, then escalation to the chief of staff; never a restart.
 
 ## How work reaches each kind of agent
 
