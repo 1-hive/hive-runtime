@@ -3,7 +3,8 @@
 it as a staged repository, so agents can work in it at once and their results reach GitHub only after review.
 
     new-repo.py --registry REGISTRY.json --name NAME --github-token FILE [--owner OWNER] [--description TEXT]
-                [--keys DIR] [--copies DIR] [--clones DIR] [--registry-repo BARE.git] [--dry-run]
+                [--collaborator LOGIN]... [--keys DIR] [--copies DIR] [--clones DIR] [--registry-repo BARE.git]
+                [--dry-run]
     new-repo.py --registry REGISTRY.json --registry-repo BARE.git --publish-only
     new-repo.py --merge-registry FILE < OTHER_REGISTRY.json      (add OTHER's repositories that FILE lacks)
 
@@ -17,6 +18,8 @@ Each step is skipped when already done, so a rerun after a failure finishes the 
 1. the repository on GitHub (OWNER defaults to the token's account; an organization's repository if OWNER is an
    organization), public, with a README on main;
 2. a write deploy key for the publisher, DIR/<id> (ed25519, made here, never copied), added to the repository;
+   then each --collaborator LOGIN invited with write access (people who merge the hive's pull requests; GitHub
+   mails them an invitation to accept; already a collaborator or already invited is left alone);
 3. its registry entry, staged: the hive copy COPIES/<id>.git first, GitHub second, local_path CLONES/<id>
    (the id is the name in lower case: the record's pins allow no capitals). The file is replaced atomically;
 4. with --registry-repo, the registry committed to that bare repository's main, so the hive's other hosts can
@@ -42,6 +45,7 @@ from pathlib import Path
 API = "https://api.github.com"
 ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")          # hivepin repository ids
 NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")              # GitHub repository names
+LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")       # GitHub logins
 
 
 class Fail(Exception):
@@ -135,6 +139,29 @@ def merge_registry(into: Path, other: dict) -> list[str]:
     return added
 
 
+def invite_collaborators(token: str, full: str, me: str, logins: list[str], dry_run: bool) -> None:
+    for login in dict.fromkeys(l.strip().lstrip("@") for l in logins if l.strip()):
+        if not LOGIN.match(login):
+            raise Fail(f"--collaborator {login!r} isn't a GitHub login")
+        if login.lower() in (me.lower(), full.split("/")[0].lower()):
+            continue                                          # the owner already has every right
+        st, _ = github(token, "GET", f"/repos/{full}/collaborators/{login}")
+        if st == 204:
+            print(f"collaborator: {login} already on {full}")
+            continue
+        st, inv = github(token, "GET", f"/repos/{full}/invitations?per_page=100")
+        if st == 200 and any((i.get("invitee") or {}).get("login", "").lower() == login.lower() for i in inv):
+            print(f"collaborator: {login} already invited to {full}")
+            continue
+        if dry_run:
+            print(f"would invite {login} to {full} (write)")
+            continue
+        st, r = github(token, "PUT", f"/repos/{full}/collaborators/{login}", {"permission": "push"})
+        if st not in (201, 204):
+            raise Fail(f"GitHub refused to add {login} to {full} ({st}: {(r or {}).get('message')})")
+        print(f"collaborator: {login} {'invited to' if st == 201 else 'added to'} {full} (write)")
+
+
 def main() -> int:
     if sys.argv[1:2] == ["--merge-registry"]:   # new-repo.py --merge-registry FILE < OTHER.json
         if len(sys.argv) != 3:
@@ -149,6 +176,8 @@ def main() -> int:
     ap.add_argument("--owner", help="GitHub account or organization (default: the token's account)")
     ap.add_argument("--description", default="")
     ap.add_argument("--github-token", type=Path, help="file holding a token that may create repositories and deploy keys")
+    ap.add_argument("--collaborator", action="append", default=[], metavar="LOGIN",
+                    help="GitHub login invited with write access (repeatable)")
     ap.add_argument("--keys", type=Path, default=Path("/var/lib/hive/publisher/keys"))
     ap.add_argument("--copies", type=Path, default=Path("/var/lib/hive/repos"))
     ap.add_argument("--clones", type=Path, default=Path("/var/lib/hive/clones"))
@@ -178,6 +207,9 @@ def run(a) -> int:
     if not a.github_token or not a.github_token.is_file():
         raise Fail("--github-token FILE is required")
     token = a.github_token.read_text().strip()
+    bad = [l for l in a.collaborator if not LOGIN.match(l.strip().lstrip("@"))]
+    if bad:
+        raise Fail(f"--collaborator {bad[0]!r} isn't a GitHub login")
 
     st, me = github(token, "GET", "/user")
     if st != 200:
@@ -234,6 +266,7 @@ def run(a) -> int:
             if st != 201:
                 raise Fail(f"GitHub refused the deploy key for {full} ({st}: {(r or {}).get('message')})")
             print(f"deploy key: added to {full} (write)")
+    invite_collaborators(token, full, me["login"], a.collaborator, a.dry_run)
 
     # 3. the registry entry
     if rid in reg["repositories"]:

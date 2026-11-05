@@ -19,7 +19,7 @@ spec = importlib.util.spec_from_file_location("new_repo", HERE / "new-repo.py")
 nr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nr)
 
-state = {"repos": {}, "keys": {}, "calls": [], "token_ok": True}
+state = {"repos": {}, "keys": {}, "collab": {}, "invites": {}, "calls": [], "token_ok": True}
 
 
 class GH(BaseHTTPRequestHandler):
@@ -37,6 +37,10 @@ class GH(BaseHTTPRequestHandler):
             return self.reply(200, {"login": "agents"}) if state["token_ok"] else self.reply(401, {"message": "Bad credentials"})
         parts = self.path.strip("/").split("/")
         full = "/".join(parts[1:3])
+        if parts[3:4] == ["collaborators"]:
+            return self.reply(204, None) if parts[4] in state["collab"].get(full, []) else self.reply(404, {"message": "Not Found"})
+        if parts[3:4] and parts[3].startswith("invitations"):
+            return self.reply(200, [{"invitee": {"login": l}} for l in state["invites"].get(full, [])])
         if parts[-1] == "keys":
             return self.reply(200, state["keys"].get(full, []))
         r = state["repos"].get(full.lower())
@@ -55,6 +59,13 @@ class GH(BaseHTTPRequestHandler):
             state["keys"].setdefault(full, []).append({"key": b["key"] + " ignored-comment"})
             return self.reply(201, {"id": 1})
         return self.reply(404, {"message": "Not Found"})
+
+    def do_PUT(self):
+        b = self.body()
+        state["calls"].append(("PUT", self.path, b))
+        parts = self.path.strip("/").split("/")
+        state["invites"].setdefault("/".join(parts[1:3]), []).append(parts[4])
+        return self.reply(201, {"id": 7})
 
     def log_message(self, *a):
         pass
@@ -83,7 +94,10 @@ def main():
         assert not state["repos"] and not (tmp / "keys").exists() and "mettadinc" not in (tmp / "registry.json").read_text()
 
         # the real run: created, key added, registered staged, registry committed
-        assert run(tmp, "--name", "MeTTaDinC", "--description", "MeTTaDinC on Cetta") == 0
+        assert run(tmp, "--name", "MeTTaDinC", "--description", "MeTTaDinC on Cetta", "--collaborator", "glicerico",
+                   "--collaborator", "@glicerico", "--collaborator", "agents") == 0
+        puts = [c for c in state["calls"] if c[0] == "PUT"]
+        assert puts == [("PUT", "/repos/agents/MeTTaDinC/collaborators/glicerico", {"permission": "push"})], puts
         assert "agents/mettadinc" in state["repos"], state["repos"]
         kp = [c for c in state["calls"] if c[0] == "POST" and c[1].endswith("/keys")]
         assert len(kp) == 1 and kp[0][2]["read_only"] is False, kp
@@ -101,8 +115,14 @@ def main():
 
         # a rerun does nothing new
         n = len([c for c in state["calls"] if c[0] == "POST"])
-        assert run(tmp, "--name", "MeTTaDinC") == 0
-        assert len([c for c in state["calls"] if c[0] == "POST"]) == n
+        assert run(tmp, "--name", "MeTTaDinC", "--collaborator", "glicerico") == 0
+        assert len([c for c in state["calls"] if c[0] in ("POST", "PUT")]) == n + 1
+        # an existing repository gets a later collaborator; one already on it is left alone; a bad login is an error
+        state["collab"]["agents/MeTTaDinC"] = ["bob"]
+        assert run(tmp, "--name", "MeTTaDinC", "--collaborator", "bob", "--collaborator", "carol") == 0
+        assert [c[1] for c in state["calls"] if c[0] == "PUT"][-1].endswith("/collaborators/carol")
+        assert len([c for c in state["calls"] if c[0] == "PUT"]) == 2
+        assert run(tmp, "--name", "MeTTaDinC", "--collaborator", "bad/login") == 1
         assert subprocess.run(["git", "-C", str(tmp / "hive-registry.git"), "rev-parse", "main"], capture_output=True, text=True).stdout == head
 
         # errors: a taken id elsewhere, a private repository, a bad token, a bad name
