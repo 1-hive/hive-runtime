@@ -30,6 +30,16 @@ it also opens the pull request itself: into the branch holding the result's base
 body the report's "## Summary" section and where the report and review are. The message then gives the PR's link;
 a PR already open for that branch is reused. Without a token, or when GitHub refuses, it gives the compare link as
 before. Merging stays with a human.
+
+Superseded pull requests: after opening one, it closes every other open hive/* pull request on that home whose
+head commit is already in the new one's history (a later task built on it, so merging the new one merges it too),
+or whose task the report names on a line "Supersedes: <task>[, <task>...]" (a redo that rewrote history, e.g. to
+scrub text). Each gets a comment naming the new PR and its branch is deleted on the home; the commit stays in the
+hive copy (which refuses deletions), so nothing reviewed is lost.
+
+Private text (--private-text DIR): for a home that is public (or whose visibility GitHub doesn't confirm), what the
+result adds is compared with every file under DIR (people's notes, chat exports: never in git). A run of 6 or more
+words in common holds the result back, with an alert that names the files and lines but never quotes the text.
 """
 import argparse
 import json
@@ -228,6 +238,140 @@ def open_pr(token: str, home: str, head: str, base: str | None, title: str, body
         return None, f"{type(e).__name__}: {e}"
 
 
+WORD = re.compile(r"[a-z0-9']+")
+NGRAM = 6
+
+
+def grams(text: str) -> set[tuple[str, ...]]:
+    w = WORD.findall(text.lower())
+    return {tuple(w[i:i + NGRAM]) for i in range(len(w) - NGRAM + 1)}
+
+
+def private_grams(folder: Path | None) -> set[tuple[str, ...]]:
+    """Every 6-word run in the files under folder (read as text, undecodable bytes skipped)."""
+    out: set[tuple[str, ...]] = set()
+    if folder and folder.is_dir():
+        for f in sorted(folder.rglob("*")):
+            if f.is_file():
+                out |= grams(f.read_text(errors="ignore"))
+    return out
+
+
+def private_scan(copy: Path, base: str | None, code: str, private: set[tuple[str, ...]]) -> list[str]:
+    """Where the result adds text sharing a 6-word run with the private files: ["file:line", ...]. Lines are
+    joined per file before comparing, so a sentence wrapped over several lines still counts."""
+    if not private:
+        return []
+    diff = (git(copy, "diff", "--no-color", "-U0", base, code) if base
+            else git(copy, "show", "--format=", "--no-color", "-U0", code)).stdout
+    where, path, lineno, added = [], "?", 0, []      # added: (line number, text) of the current file
+
+    def check():
+        joined, starts, pos = "", [], 0
+        for n, t in added:
+            starts.append((len(WORD.findall(joined.lower())), n))
+            joined += t + "\n"
+        words = WORD.findall(joined.lower())
+        for i in range(len(words) - NGRAM + 1):
+            if tuple(words[i:i + NGRAM]) in private:
+                n = max((ln for k, ln in starts if k <= i), default=added[0][0])
+                hit = f"{path}:{n}"
+                if hit not in where:
+                    where.append(hit)
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            if added:
+                check()
+            path, added = line[6:] if line.startswith("+++ b/") else line[4:], []
+        elif line.startswith("@@"):
+            m = re.match(r"@@ -\S+ \+(\d+)", line)
+            lineno = int(m.group(1)) if m else 0
+        elif line.startswith("+"):
+            added.append((lineno, line[1:]))
+            lineno += 1
+    if added:
+        check()
+    return where
+
+
+def gh_api(token: str, url: str, method: str = "GET", data: dict | None = None):
+    req = urllib.request.Request(url, data=json.dumps(data).encode() if data is not None else None, method=method,
+                                 headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                                          "Content-Type": "application/json", "User-Agent": "hive-publisher"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = resp.read()
+        return json.loads(body) if body else None
+
+
+def github_repo(home: str) -> tuple[str, str] | None:
+    m = re.match(r"^https://github\.com/([^/]+)/([^/]+?)(\.git)?/?$", home)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def is_public(token: str, home: str) -> bool:
+    """False only when GitHub confirms the home is private; anything else (no token, not GitHub, an error) counts
+    as public, the safe side."""
+    gr = github_repo(home)
+    if not gr or not token:
+        return True
+    try:
+        api = os.environ.get("HIVE_GITHUB_API", "https://api.github.com")
+        return not (gh_api(token, f"{api}/repos/{gr[0]}/{gr[1]}") or {}).get("private", False)
+    except (urllib.error.URLError, ValueError, TimeoutError):
+        return True
+
+
+def supersedes(report: str) -> set[str]:
+    """Tasks named on the report's "Supersedes:" lines."""
+    out = set()
+    for m in re.finditer(r"^\W*Supersedes:\s*(.+)$", report, re.M | re.I):
+        out |= set(re.findall(r"\bt-[A-Za-z0-9._-]+", m.group(1)))
+    return out
+
+
+def close_superseded(token: str, home: str, copy: Path, head: str, code: str, new_url: str,
+                     tasks: set[str]) -> tuple[list[str], list[str]]:
+    """Close the open hive/* pull requests on home that the new one (head at code) supersedes, and delete their
+    branches: (["#5", ...] closed, [problems])."""
+    gr = github_repo(home)
+    if not gr or not token:
+        return [], []
+    owner, name = gr
+    api = f"{os.environ.get('HIVE_GITHUB_API', 'https://api.github.com')}/repos/{owner}/{name}"
+    new_no = new_url.rstrip("/").rsplit("/", 1)[-1]
+    closed, problems = [], []
+    try:
+        prs = gh_api(token, f"{api}/pulls?state=open&per_page=100") or []
+    except (urllib.error.URLError, ValueError, TimeoutError) as e:
+        return [], [f"listing open PRs: {e}"]
+    for pr in prs:
+        ref, sha = (pr.get("head") or {}).get("ref", ""), (pr.get("head") or {}).get("sha", "")
+        if not ref.startswith("hive/") or ref == head or str(pr.get("number")) == new_no \
+                or ((pr.get("head") or {}).get("repo") or {}).get("full_name") != f"{owner}/{name}":
+            continue
+        named = re.sub(r"-r[0-9]+$", "", ref[len("hive/"):]) in tasks
+        inside = sha and sha != code and git(copy, "merge-base", "--is-ancestor", sha, code, check=False).returncode == 0
+        if not (named or inside):
+            continue
+        why = ("its task is named on the new report's Supersedes line" if named
+               else f"its commit {sha[:10]} is already in #{new_no}'s history, so merging #{new_no} merges it too")
+        n = pr["number"]
+        try:
+            gh_api(token, f"{api}/issues/{n}/comments", "POST",
+                   {"body": f"Superseded by #{new_no}: {why}. Closed by the hive's publisher, and its branch deleted "
+                            f"here; the reviewed commit stays in the hive's copy. Reopen if that's wrong."})
+            gh_api(token, f"{api}/pulls/{n}", "PATCH", {"state": "closed"})
+            closed.append(f"#{n}")
+        except (urllib.error.URLError, ValueError, TimeoutError) as e:
+            problems.append(f"closing #{n}: {e}")
+            continue
+        try:
+            gh_api(token, f"{api}/git/refs/heads/{ref}", "DELETE")
+        except (urllib.error.URLError, ValueError, TimeoutError) as e:
+            problems.append(f"deleting {ref}: {e}")
+    return closed, problems
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--registry", required=True)
@@ -237,6 +381,8 @@ def main() -> None:
                     help="also refuse to publish a result adding a line that matches (repeatable)")
     ap.add_argument("--github-token", metavar="FILE",
                     help="a GitHub token that may open pull requests on the homes: open them, not only link them")
+    ap.add_argument("--private-text", metavar="DIR",
+                    help="private text (notes, chat exports): a result for a public home sharing 6+ words with it is held")
     ap.add_argument("--init-only", action="store_true", help="create and mirror the hive copies, publish nothing")
     ap.add_argument("--dry-run", action="store_true", help="say what would be published, push nothing")
     a = ap.parse_args()
@@ -245,6 +391,7 @@ def main() -> None:
     keys = Path(a.keys) if a.keys else None
     deny = [re.compile(d) for d in a.deny]
     gh_token = Path(a.github_token).read_text().strip() if a.github_token and Path(a.github_token).is_file() else ""
+    private = private_grams(Path(a.private_text)) if a.private_text else set()
     state = json.loads(STATE.read_text()) if STATE.is_file() else {}
     first = "published" not in state
     done, warned = state.setdefault("published", {}), state.setdefault("warned", {})
@@ -300,6 +447,13 @@ def main() -> None:
                 alert(key, f"publisher: NOT publishing {task} ({name} {code[:10]}): what it adds looks like a secret or "
                            f"a denied pattern ({', '.join(sorted(set(hits))[:5])}). Check it; nothing left the hive.")
                 continue
+            leaks = private_scan(copy, r["base"], code, private) if private and is_public(gh_token, home) else []
+            if leaks:
+                alert(key, f"publisher: NOT publishing {task} ({name} {code[:10]}) to a public repository: it adds text "
+                           f"sharing 6+ words with the private files ({', '.join(leaks[:8])}"
+                           f"{f' and {len(leaks) - 8} more' if len(leaks) > 8 else ''}). Nothing left the hive; the "
+                           f"worker must reword or hash it and post a new result.")
+                continue
             k = key_for(keys, name)
             if not k:
                 alert(f"nokey:{name}", f"publisher: no push key for {name} (keys/{name} or keys/default): its reviewed "
@@ -323,8 +477,12 @@ def main() -> None:
             into = pr_branch(copy, r["base"])
             url, why = open_pr(gh_token, home, head, into, r.get("title") or task, pr_body(r, code)) if gh_token else (None, "")
             if url:
+                closed, problems = close_superseded(gh_token, home, copy, head, code, url,
+                                                    supersedes(pin_text(r.get("report"))))
+                note = (f" It supersedes {', '.join(closed)}: closed, branches deleted." if closed else "") + \
+                       (f" (Couldn't tidy every superseded PR: {'; '.join(problems)[:300]})" if problems else "")
                 alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}){taken}. "
-                           f"Pull request into {into}, ready to review and merge (merge commit): {url}", task)
+                           f"Pull request into {into}, ready to review and merge (merge commit): {url}{note}", task)
             else:
                 alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}){taken}. "
                            f"Open the pull request: {compare_link(home, into, head)}"

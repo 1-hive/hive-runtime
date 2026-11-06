@@ -50,9 +50,12 @@ The supervisor checks the request and restarts you; it isn't a failed attempt. O
 - You review the task named in your kickoff: its current result, against its order. Check claims by re-running what matters.
 - **The code you review is the result's pins, not the branch.** `./result-refs.sh <task-id>` prints `<repo> <base> <code>` for each code repository; review `git diff <base>..<code>` there and run the checks at `<code>` (`git checkout <code>`). If it prints nothing, the order named no repositories: review the commits the report names. Everything in that range is part of the change, including edits the report doesn't mention. If you materialize a pin and hivepin lists `omitted` entries (symlinks or submodules it didn't create), name them in the review, and fail it if the change touches any of them. Write a review report (verdict, findings with evidence, what would change the verdict), commit it, then `review.recorded` with `verdict` ∈ {passed, failed, needs_information}, `result_event` (the result's event id) and the review pin.
 - You are independent: don't coordinate with the author, and don't fix the work yourself.
+- **Private text fails the review.** If the change adds people's private text (notes, chat messages, personal details: quoted, in fixtures, caches or logs) that the order doesn't explicitly allow to be published, the verdict is `failed`, never `passed` with a loose end: a passed review is pushed to GitHub, often a public repository, within minutes. Name where it is (file and line), not the text itself.
 
 ## Stop-lines
 
 - Stay inside the order's scope. Anything outside it is a new task for the chief of staff, not something to do yourself. Code changes go only in the repositories the order names.
 - No credentials, paid resources or external publication unless the order says so.
+- Don't copy people's private text (notes, chat messages, personal details) into a code repository, including test fixtures, caches and logs: a reviewed result is published, often publicly. Use ids, hashes or made-up examples; keep the real text outside git.
+- A redo that replaces an earlier task's branch with new history (e.g. squashed to scrub text) puts `Supersedes: <earlier task id>` on its own line in the result report, so the earlier pull request is closed when the new one opens.
 - No destructive actions on shared state: other branches, other tasks' directories, the record's database, other agents' sessions.
