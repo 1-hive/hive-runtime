@@ -68,6 +68,27 @@ check("just resolved, same silent reviewer: no re-escalation (the overnight loop
 EVENTS["t2"][-1]["recorded_at"] = iso(NOW - 7300); EVENTS["t2"][-2]["recorded_at"] = iso(NOW - 7400)
 sup.supervise(r, NOW, False)
 check("a full window after the resolution: escalated again", emitted and emitted[-1][2]["code"] == "other", emitted)
+# the wait counts from when the reviewer starts the result (the Floor), not from the assignment: a result queued
+# behind another review isn't late (2026-11-06: ~12 escalations for results still waiting on reviewer.claude)
+q = {**r, "id": "t3"}
+EVENTS["t3"] = [{"type": "review.assigned", "recorded_at": iso(NOW - 8000), "data": {"reviewer": "reviewer.astra", "result_event": "e1"}}]
+sup.FLOOR_NOW.clear(); sup.FLOOR_NOW["reviewer.astra"] = {"state": "review", "headline": "Reviewing t-other", "since": NOW - 600}
+emitted.clear(); sup.supervise(q, NOW, False)
+check("queued behind another review, past the limit since assignment: nothing", not emitted and "t3" in sup.QUEUED, emitted)
+sup.FLOOR_NOW["reviewer.astra"] = {"state": "review", "headline": "Reviewing t3", "since": NOW - 300}
+sup.supervise(q, NOW + 60, False)
+check("its own review started 5 min ago: nothing", not emitted, emitted)
+sup.supervise(q, NOW + 7300, False)
+check("its own review running past the limit: escalated, counting from its start",
+      emitted and "reviewing it" in emitted[-1][2]["reason"] and "126 min" in emitted[-1][2]["reason"], emitted)
+emitted.clear(); sup.FLOOR_NOW["reviewer.astra"] = {"state": "cantrun", "headline": "Can't run"}
+sup.supervise(q, NOW + 600, False)
+check("can't run after queueing: counted from when it was last seen queued, not from the assignment", not emitted, emitted)
+sup.supervise(q, NOW + 7300, False)
+check("... and escalated a full window later", emitted and "could start" in emitted[-1][2]["reason"], emitted)
+emitted.clear(); sup.FLOOR_NOW.clear(); sup.QUEUED.clear(); sup.supervise(q, NOW, False)
+check("no Floor: counted from the assignment, as before", emitted and emitted[-1][2]["code"] == "other", emitted)
+sup.FLOOR_NOW.clear(); sup.QUEUED.clear()
 EVENTS["t1"] = [{"type": "task.nudged", "recorded_at": iso(NOW - 1000)}, {"type": "task.escalation_resolved", "recorded_at": iso(NOW - 100)}]
 t.update(status="assigned", assigned_at=iso(NOW - 2000)); t["ext"]["nudges_since_activity"] = 2; emitted.clear()
 sup.supervise(t, NOW, False)

@@ -49,7 +49,9 @@ import os
 import signal
 import subprocess
 import sys
+import re
 import time
+import urllib.request
 from pathlib import Path
 
 import hive_paths as hp
@@ -72,6 +74,14 @@ MAX_CHECKPOINTS = 3  # routing checkpoints per task
 # reassigns. A result they must review that waits longer than HIVE_REVIEW_WAIT_SECONDS is escalated too.
 LONG_LIVED = [p.strip() for p in os.environ.get("HIVE_LONG_LIVED_ACTORS", "").split(",") if p.strip()]
 REVIEW_WAIT_S = int(os.environ.get("HIVE_REVIEW_WAIT_SECONDS", 7200))
+# A long-lived reviewer reviews one result at a time, so a result can wait in its queue for hours. The wait is
+# counted from when the reviewer starts that result, as the Floor shows it (hive-bridge, HIVE_FLOOR_URL, its beacons):
+# while the Floor shows the reviewer reviewing another result, this one is queued, not late. A Floor that doesn't
+# answer, or a reviewer it shows idle, can't run or offline, leaves the count from the assignment (or from when the
+# result was last seen queued).
+FLOOR_URL = os.environ.get("HIVE_FLOOR_URL", "http://127.0.0.1:8476").rstrip("/")
+FLOOR_NOW: dict[str, dict] = {}    # actor -> the Floor's "now" for it, read once per tick
+QUEUED: dict[str, float] = {}      # task -> when its result was last seen waiting behind another review
 CP_FILE = "route-checkpoint.json"
 # What a checkpoint may change: facts the worker learns from the work. verification,
 # consequence and leverage describe the task's stakes and stay as the chief of staff set them.
@@ -125,9 +135,17 @@ def supervise_long_lived(t: dict, now: float, dry: bool) -> None:
         # after an escalation (or its resolution) the reviewer gets a full window again, not a re-escalation
         # every pass while the same reviewer stays silent
         since = max([assigned or 0, last_escalation(hist)])
+        doing = reviewing(rv)
+        if doing and doing[0] != task:   # busy with another result: this one waits in its queue
+            QUEUED[task] = now
+            return
+        started = doing[1] if doing else None
+        since = max([since, QUEUED.get(task, 0), started or 0])
         if assigned and now - since > REVIEW_WAIT_S:
+            waited = f"after {int((now - started) / 60)} min reviewing it" if started else \
+                f"{int((now - since) / 60)} min after it could start"
             emit("task.escalated", task, {"to": "chief_of_staff", "code": "other",
-                                          "reason": f"no verdict from {rv} after {int((now - assigned) / 60)} min"}, dry=dry)
+                                          "reason": f"no verdict from {rv} {waited}"}, dry=dry)
         return
     if t["status"] == "assigned":
         limit, since = lease.get("accept_within_seconds"), ts(t.get("assigned_at"))
@@ -151,6 +169,26 @@ def supervise_long_lived(t: dict, now: float, dry: bool) -> None:
     emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck",
                                   "reason": f"{what} for {int((now - since) / 60)} min after {nudges} nudges; "
                                             f"{t.get('owner')} may need reassigning"}, dry=dry)
+
+
+def read_floor() -> None:
+    """The Floor's "now" for every agent, once per tick; one that doesn't answer leaves nothing known."""
+    FLOOR_NOW.clear()
+    try:
+        with urllib.request.urlopen(FLOOR_URL + "/api/bots", timeout=10) as r:
+            FLOOR_NOW.update({b["id"]: b.get("now") or {} for b in json.load(r)["bots"]})
+    except Exception as e:
+        log(f"the Floor: {e}")
+
+
+def reviewing(actor: str) -> tuple[str, float | None] | None:
+    """(task, since) when the Floor shows the reviewer reviewing a result now, else None."""
+    st = FLOOR_NOW.get(actor) or {}
+    if st.get("state") != "review":
+        return None
+    m = re.match(r"^Reviewing (\S+)$", st.get("headline") or "")
+    task = st.get("task") or (m.group(1) if m else None)
+    return (task, st.get("since")) if task else None
 
 
 def last_escalation(hist: list[dict]) -> float:
@@ -500,6 +538,10 @@ def check_budgets(state: dict, now: float, dry: bool) -> None:
 def tick(dry: bool) -> None:
     state = json.loads(hive("state"))
     now = time.time()
+    if LONG_LIVED:
+        read_floor()
+    for task in [k for k, at in QUEUED.items() if now - at > 2 * 86400]:   # long gone
+        QUEUED.pop(task, None)
     check_budgets(state, now, dry)
     for t in state.get("tasks", {}).values():
         try:   # one task's failure is logged, never stops the others
