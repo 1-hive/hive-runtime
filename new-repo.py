@@ -55,7 +55,9 @@ class Fail(Exception):
 def github(token: str, method: str, path: str, data: dict | None = None) -> tuple[int, object]:
     req = urllib.request.Request(API + path, method=method, data=json.dumps(data).encode() if data is not None else None,
                                  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-                                          "User-Agent": "hive-new-repo", "X-GitHub-Api-Version": "2022-11-28"})
+                                          "User-Agent": "hive-new-repo", "X-GitHub-Api-Version": "2022-11-28",
+                                          # urllib labels a body form-urlencoded; GitHub's collaborator PUT then answers 500
+                                          **({"Content-Type": "application/json"} if data is not None else {})})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             body = r.read()

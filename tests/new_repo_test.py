@@ -61,6 +61,7 @@ class GH(BaseHTTPRequestHandler):
         return self.reply(404, {"message": "Not Found"})
 
     def do_PUT(self):
+        assert self.headers.get("Content-Type") == "application/json", self.headers.get("Content-Type")
         b = self.body()
         state["calls"].append(("PUT", self.path, b))
         parts = self.path.strip("/").split("/")
