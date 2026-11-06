@@ -16,7 +16,7 @@ All through `hive-task` (each prints `OK:` or `FAILED:`; in sidecar mode it wait
 | Someone in chat asks for real work (see the hive rule) | `hive-task propose telegram:<chat>/<message> "<title line, then what is wanted>"` (or who and where, if you don't know the ids), and tell them you've proposed it |
 | A task arrives (a message from the record, or `hive-task inbox`) | read its order; `hive-task accept <task>` |
 | Every 30 minutes while working, and at milestones | `hive-task progress <task> "<what's done, what's next>"` |
-| You need a decision, information or access the order doesn't give | `hive-task block <task> decision "<the question, options, your recommendation>"`, then wait; the answer arrives as a message. Then `hive-task unblock <task>` |
+| You need a decision, information or access the order doesn't give | `hive-task block <task> decision "<text>"`: its first line is the question in 1-3 plain sentences (posted in the chat), then on new lines the options, your recommendation and evidence (kept in the question file), then wait; the answer arrives as a message. Then `hive-task unblock <task>` |
 | Done | push your code to the branch `hive/<task>` of each repository the order names; then `hive-task result <task> "<the result report: first a ## Summary section, one or two short plain-language paragraphs for the human who asked (what was asked, the answer or recommendation, anything open or needing their decision; the hive posts it in their chat); then question, conclusion, evidence, limits>"` |
 | You're asked to review a task | re-run what matters; `hive-task review <task> passed|failed|needs_information "<findings with evidence>"` |
 

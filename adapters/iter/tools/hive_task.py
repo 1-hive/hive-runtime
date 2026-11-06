@@ -5,8 +5,8 @@ from pathlib import Path
 
 DESCRIPTION = ("Hive record actions; the hive channel tells you of tasks. action: propose (a task asked for in "
                "chat: text = title, then what is wanted; extra = where, telegram:<chat>/<msg>), accept, "
-               "progress, checkpoint (text), block (text = question; extra = decision, information, access, "
-               "external), unblock, result (text = report, starting ## Summary for the asker; push code first), "
+               "progress, checkpoint (text), block (text = question: first line the question in 1-3 plain sentences, posted in chat; then "
+               "options, recommendation, evidence; extra = decision, information, access, external), unblock, result (text = report, starting ## Summary for the asker; push code first), "
                "review (text = findings; extra = passed, failed, needs_information). task = id (empty: your open "
                "task). Outcomes: hive channel.")
 

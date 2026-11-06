@@ -514,6 +514,18 @@ def find_task(h, st, task_id, roles=("owner",)):
     return mine[0]
 
 
+def short_question(text: str, n: int = 500) -> str:
+    """A question's first line for task.blocked's reason (the record holds 500 characters; the chat shows it, with
+    the whole question as a file): a longer one ends at the last sentence end, else word break, with " …"."""
+    line = text.strip().splitlines()[0].strip()
+    if len(line) <= n:
+        return line
+    head = line[:n - 2]
+    i = max(head.rfind(". "), head.rfind("? "), head.rfind(": "))
+    i = i + 1 if i > n // 2 else head.rfind(" ")
+    return head[:i if i > n // 2 else n - 2].rstrip() + " …"
+
+
 def do(h, req):
     """One queued action. Returns the line the agent sees."""
     st = h.state()
@@ -545,7 +557,7 @@ def do(h, req):
         if not text:
             raise Failed("a question needs text")
         q = h.report(t, "question", text)
-        e = h.emit("task.blocked", tid, {"needs": needs, "reason": text.splitlines()[0][:500]}, [("question", q)])
+        e = h.emit("task.blocked", tid, {"needs": needs, "reason": short_question(text)}, [("question", q)])
         return f"{tid} is blocked (needs {needs}) at position {e['position']}; you'll get the answer here"
     if action == "unblock":
         e = h.emit("task.unblocked", tid, cause=h.last_event(tid, "task.answered"))
