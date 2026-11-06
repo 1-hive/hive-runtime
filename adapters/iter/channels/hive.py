@@ -517,7 +517,14 @@ def find_task(h, st, task_id, roles=("owner",)):
 def short_question(text: str, n: int = 500) -> str:
     """A question's first line for task.blocked's reason (the record holds 500 characters; the chat shows it, with
     the whole question as a file): a longer one ends at the last sentence end, else word break, with " …"."""
-    line = text.strip().splitlines()[0].strip()
+    lines = [l.strip() for l in text.strip().splitlines()]
+    line = lines[0]
+    if "---" in lines:   # a decision card (hive-bridge card.py): the reason is what waits, and its questions
+        top = lines[:lines.index("---")]
+        qs = [l for l in top if re.match(r"^\d{1,2}[.)]\s", l)]
+        before = next((l.split(":", 1)[1].strip() for l in top if re.match(r"(?i)^before\s*:", l)), "")
+        if qs and (before or any(re.match(r"(?i)^status\s*:", l) for l in top)):   # same rule as card.py
+            line = (f"Before {before[0].lower()}{before[1:]}: " if before else "") + " ".join(qs)
     if len(line) <= n:
         return line
     head = line[:n - 2]
