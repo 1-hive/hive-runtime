@@ -30,6 +30,7 @@ D=${COS_DIR:-$HIVE_WORK_DIR/cos} A=${COS_KEY_DIR:-$HIVE_CONFIG_DIR/agents}
 MODEL=${COS_MODEL:-claude-opus-5-5}
 GIT_USER=${COS_GIT_USER:-$USER}   # the host user cos's git reaches over sshd (vm2: hive, whose shell is git-shell)
 CLAUDE="claude --model $MODEL --permission-mode auto --mcp-config /cos/mcp.json"
+CLAUDE_P=$CLAUDE   # headless calls (chat); setup may route them through claude-failover.sh
 
 setup() {
   [ "$RT" != podman ] || id "$U" >/dev/null 2>&1 || { echo "no OS user $U: sudo $RUNTIME_DIR/agent-users.sh cos" >&2; exit 2; }
@@ -46,6 +47,15 @@ setup() {
     # Claude's credential: a token file, and/or claude.env (KEY=value lines, e.g. ANTHROPIC_BASE_URL and
     # ANTHROPIC_AUTH_TOKEN for a gateway that holds the account's login).
     if [ -s "$A/claude-oauth-token" ]; then CLAUDE_CODE_OAUTH_TOKEN=$(cat "$A/claude-oauth-token"); export CLAUDE_CODE_OAUTH_TOKEN; fi
+    # A second account (claude-oauth-token.2): headless calls (chat) move to it when the first is at its usage
+    # limit (claude-failover.sh), and the session (run) starts on whichever isn't limited.
+    if [ -s "$A/claude-oauth-token.2" ]; then
+      export CLAUDE_TOKEN_FILES="$A/claude-oauth-token $A/claude-oauth-token.2" CLAUDE_FAILOVER_STATE=$D/.claude-failover
+      CLAUDE_CODE_OAUTH_TOKEN=$(tr -d '[:space:]' < "$("$RUNTIME_DIR/claude-failover.sh" --pick)"); export CLAUDE_CODE_OAUTH_TOKEN
+      CLAUDE_P="$RUNTIME_DIR/claude-failover.sh --model $MODEL --permission-mode auto --mcp-config $D/mcp.json"
+    else
+      CLAUDE_P=$CLAUDE
+    fi
     if [ -s "$A/claude.env" ]; then set -a; . "$A/claude.env"; set +a; fi
     return
   fi
@@ -116,11 +126,11 @@ case "${1:-}" in
     # and a stopped turn isn't retried as a new conversation.
     T="timeout -k 10 900"
     rc=0
-    printf '%s' "$msg" | "${P[@]}" $([ "$RT" = none ] || echo exec -i -w /cos/chat "$NAME") $T $CLAUDE -p --continue 2>/dev/null || rc=$?
+    printf '%s' "$msg" | "${P[@]}" $([ "$RT" = none ] || echo exec -i -w /cos/chat "$NAME") $T $CLAUDE_P -p --continue 2>/dev/null || rc=$?
     if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
       echo "(stopped after 15 minutes without a reply)"
     elif [ "$rc" != 0 ]; then
-      printf '%s' "$msg" | "${P[@]}" $([ "$RT" = none ] || echo exec -i -w /cos/chat "$NAME") $T $CLAUDE -p
+      printf '%s' "$msg" | "${P[@]}" $([ "$RT" = none ] || echo exec -i -w /cos/chat "$NAME") $T $CLAUDE_P -p
     fi ;;
   stop)
     [ "$RT" = none ] && exec tmux kill-session -t cos
