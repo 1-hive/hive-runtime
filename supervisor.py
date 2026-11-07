@@ -256,8 +256,8 @@ def stop(pid: int, container: str | None = None) -> None:
             pass
 
 
-CAPACITY_SIGNS = ("out of credits", "session limit", "usage limit", "rate limit", "hit your limit",
-                  "quota", "insufficient_quota", "overloaded")
+CAPACITY_SIGNS = ("out of credits", "session limit", "usage limit", "rate limit", "hit your limit", "spend limit",
+                  "credit balance is too low", "quota", "insufficient_quota", "overloaded")
 
 
 MAX_REVIEW_LIMITS = 3   # reviewer ends on a usage limit, for one result, before the operator hears

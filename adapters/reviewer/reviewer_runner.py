@@ -21,7 +21,8 @@ A run that gives no verdict is retried later; nothing is recorded for it.
 With "beacon": {"url": ...} in the config (adapters/iter/README.md, Beacons), it posts a signed beacon of
 kind "reviewer" every 30 s: "reviewing" (the task and since when) while a review command runs, and
 "problem" after a run that timed out, couldn't start or gave no verdict (the output's last error line, else its last line,
-cut to 200 characters), cleared by the next run that gives one.
+cut to 200 characters; "its model account hit a usage limit: <the line>" when the output says so), cleared by the next
+run that gives one. The Floor then shows the reviewer as unable to run, and tells the operators once.
 """
 import importlib.util
 import json
@@ -35,6 +36,17 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CHANNEL = HERE.parent / "iter" / "channels" / "hive.py"
 VERDICT = re.compile(r"^\s*VERDICT:\s*(passed|failed|needs_information)\s*$", re.I | re.M)
+# A model account out of usage, spend or credit (Claude Code, Codex, the API); as supervisor.py's CAPACITY_SIGNS
+LIMIT_SIGNS = ("out of credits", "session limit", "usage limit", "rate limit", "hit your limit", "spend limit",
+               "credit balance is too low", "insufficient_quota", "quota exceeded", "exceeded your current quota")
+
+
+def limit_line(out: str) -> str | None:
+    """The output's line saying its model account hit a usage, spend or credit limit, if any."""
+    for line in reversed([x.strip() for x in out.splitlines() if x.strip()]):
+        if any(sign in line.lower() for sign in LIMIT_SIGNS):
+            return line
+    return None
 
 
 def load_channel():
@@ -164,7 +176,9 @@ def main():
                     lines = [x.strip() for x in out.splitlines() if x.strip()]
                     last = next((x for x in reversed(lines) if re.match(r"(?i)\W*(error|fatal)\b", x)),
                                 lines[-1] if lines else "no output")
-                    doing["problem"] = f"no verdict from the review of {t['id']} (rc {r.returncode}): {last}"[:200]
+                    limit = limit_line(out)
+                    doing["problem"] = (f"its model account hit a usage limit: {limit}" if limit else
+                                        f"no verdict from the review of {t['id']} (rc {r.returncode}): {last}")[:200]
                     continue
                 doing["problem"] = None
                 verdict = m[-1].lower()
