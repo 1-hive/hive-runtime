@@ -124,6 +124,38 @@ def main():
     assert b["problem"] is None
     assert "chat" not in b and "reviewing" not in b
 
+    # its model account out of money, from the route hook: a failure naming a usage/spend limit with no turn ended since
+    spend = ("RateLimitError: Error code: 429 - {'error': {'message': '429: {\"error\":{\"message\":\"This request "
+             "would exceed your account\\'s monthly spend limit. Please try again later.\",\"type\":\"rate_limit_error\"}")
+    cap = {"event": "failure", "action": "reroute", "cls": "capacity", "ended": True, "routed": True,
+           "reason": "the provider's usage limit is reached", "error": spend}
+    o500 = {"event": "failure", "action": "stop", "cls": "outage", "reason": "the provider keeps failing (HTTP 500)",
+            "error": "InternalServerError: Error code: 500 - {'error': {'message': 'internal error'}}"}
+
+    def routed(*evs):
+        lines = hook + [dict(e, at=iso(now - 600 + 60 * i)) for i, e in enumerate(evs)]
+        (root / "route-hook.jsonl").write_text("\n".join(map(json.dumps, lines)) + "\n")
+        return mod.beacon_body(conf, root, now)["problem"]
+    r3 = {"event": "routed", "episode": "e3", "model": "claude-opus-5-5"}
+    p = routed(r3, cap)
+    assert p == "its model account hit a usage limit: This request would exceed your account's monthly spend limit.", p
+    assert routed(r3, cap, dict(o500, action="retry", cls="truncated"), o500) == p, "the fallback failing keeps it"
+    assert routed(r3, cap, {"event": "routed", "episode": "e4"}, {"event": "ended", "episode": "e4"}) is None, \
+        "a turn finished since: no problem"
+    assert routed(r3, o500, o500) is None, "provider 500s alone aren't the account"
+    assert routed(r3, dict(cap, reason="rate limited", error="RateLimitError: Error code: 429 - per-minute rate")) is None, \
+        "a passing rate limit isn't the account"
+    assert "quota is exhausted" in routed(dict(cap, reason="the provider's credit or quota is exhausted (HTTP 402)",
+                                               error="APIStatusError: 402"))
+    routed(r3, cap)
+    real_time = mod.time.time
+    mod.time.time = lambda: real_time() + 13 * 3600
+    try:
+        assert mod.beacon_body(conf, root, now)["problem"] is None, "a limit 13 h ago says nothing now"
+    finally:
+        mod.time.time = real_time
+    (root / "route-hook.jsonl").write_text("\n".join(map(json.dumps, hook)) + "\n")
+
     # an unreadable channel folder is a problem, not a crash (skipped when running as root)
     if os.geteuid() != 0:
         (ch / "processing").chmod(0)

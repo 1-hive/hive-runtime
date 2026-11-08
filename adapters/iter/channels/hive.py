@@ -843,6 +843,46 @@ def _openclaw_limit(path, now):
     return None
 
 
+ROUTE_LIMIT_SIGNS = ACCOUNT_LIMIT_SIGNS + ("quota is exhausted",)   # hive-route's reason for an HTTP 402 / quota
+# the provider's sentence naming the limit, inside an error like RateLimitError: … {"error":{"message":"This request …"}}
+LIMIT_SENTENCE = re.compile(r"[A-Z][^.:{}\"]{0,160}?(?i:%s)[^.{}\"]{0,80}\.?" % "|".join(map(re.escape, ROUTE_LIMIT_SIGNS)))
+
+
+def _route_limit(hook, now):
+    """If an Iter agent's model calls are failing on its account's money, the provider's words for it, else None.
+    From its route hook (route-hook.jsonl): the newest "failure" whose reason or error names a usage, spend or credit
+    limit (hive-route's "the provider's usage limit is reached" or "credit or quota is exhausted", not a passing
+    "rate limited"), within ACCOUNT_LIMIT_FRESH, with no turn "ended" after it. hive-route logs "ended" only for a
+    turn that finished; a turn that died logs failures, so the fallback model failing after the limit (500s, "stop")
+    leaves it in place. Only the failure's reason and error are read, never a prompt or a reply."""
+    try:
+        if now - (_stamp(hook) or 0) > ACCOUNT_LIMIT_FRESH:
+            return None
+        with open(hook, "rb") as f:
+            f.seek(max(0, os.path.getsize(hook) - 262144))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            e = json.loads(line)
+            at = _epoch(e["at"])
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if now - at > ACCOUNT_LIMIT_FRESH:
+            return None
+        if e.get("event") == "ended":
+            return None   # a turn finished since: the agent can work
+        if e.get("event") != "failure":
+            continue
+        reason, err = str(e.get("reason") or ""), str(e.get("error") or "").replace("\\", "")
+        if not any(s in f"{reason} {err}".lower() for s in ROUTE_LIMIT_SIGNS):
+            continue      # another failure (the fallback's 500s, a timeout): keep looking back
+        m = LIMIT_SENTENCE.search(err)
+        return " ".join((m.group(0) if m else reason or err).split())[:140]
+    return None
+
+
 def _openclaw(d, now=None):
     """An OpenClaw agent's sessions folder: the newest transcript's time, the chat of the session
     updated last (from sessions.json's keys, e.g. agent:main:telegram:group:-100…), if it says, and a problem when
@@ -890,6 +930,9 @@ def beacon_body(conf, root, started, kind=None, extra=None):
             body["episodes"] = _episodes(hook, since)
         except OSError as e:
             problems.append(f"can't read {hook}: {e.strerror or e}")
+        limit = _route_limit(hook, now)
+        if limit:
+            problems.append(f"{ACCOUNT_LIMIT_PROBLEM}: {limit}")
     for key, read in (("iter_channel", lambda d: _outer_channel(d, since)), ("openclaw_sessions", lambda d: _openclaw(d, now))):
         if b.get(key):
             got = read(Path(b[key]))
