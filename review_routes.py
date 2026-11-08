@@ -8,7 +8,9 @@ result it asks `hive-route decide` with:
   line as the hint (it only raises the tier);
 - the author: the table's route whose actor is the result's author (its family and model, for RT4);
 - `unavailable`: every route whose actor the Floor (hive-bridge, HIVE_FLOOR_URL) shows can't run,
-  offline or without beacon data (a reviewer not started yet), with the Floor's reason.
+  offline or without beacon data (a reviewer not started yet), with the Floor's reason; and, when that reason is
+  its model account at a usage, spend or credit limit, every other actor whose route is in the same pool (the same
+  account: Astra and Sol share one login, so Sol out of credits means Astra is too, before Astra has failed once).
 
 A decision names the actor to assign. A reviewer that has been unable to run for
 HIVE_REVIEW_MOVE_SECONDS (600) while a result waits on it is decided again (`reason: reassign`),
@@ -37,6 +39,9 @@ ROUTE_DIR = os.environ.get("HIVE_ROUTE_DIR") or str(hp.REPOS_DIR / "hive-route")
 FLOOR_URL = os.environ.get("HIVE_FLOOR_URL", "http://127.0.0.1:8476").rstrip("/")
 MOVE_AFTER = int(os.environ.get("HIVE_REVIEW_MOVE_SECONDS") or 600)
 DOWN = ("cantrun", "offline", "nodata")   # Floor states in which a reviewer takes no work (nodata: no beacon yet, e.g. not started)
+# A Floor reason that is the account's, not the reviewer's (reviewer_runner: "its model account hit a usage limit: …")
+ACCOUNT_SIGNS = ("model account hit", "out of credits", "usage limit", "spend limit", "credit balance", "hit your limit",
+                 "insufficient_quota", "quota exceeded")
 
 FACT_VALUES = {"specification": ("explicit", "partial", "goal_only"), "verification": ("independent", "weak", "none"),
                "scope": ("single", "few", "many"), "consequence": ("reversible", "costly")}
@@ -94,9 +99,26 @@ def read_floor(now: float | None = None) -> None:
             seen.add(b["id"])
             down_since.setdefault(b["id"], now)
             floor_note[b["id"]] = (st.get("detail") or st.get("headline") or st["state"])[:300]
+    for a in [a for a in seen if any(sign in floor_note[a].lower() for sign in ACCOUNT_SIGNS)]:
+        for mate, pool in pool_mates(a):
+            if mate not in seen:
+                seen.add(mate)
+                down_since.setdefault(mate, now)
+                floor_note[mate] = f"shares the {pool} account with {a}, which hit a limit: {floor_note[a]}"[:300]
     for a in list(down_since):
         if a not in seen:
             down_since.pop(a, None); floor_note.pop(a, None)
+
+
+def pool_mates(actor: str) -> list[tuple[str, str]]:
+    """(other actor, pool) for every route in a pool one of actor's routes is in: the same model account."""
+    try:
+        rs = routes().values()
+    except Exception:
+        return []
+    pools = {r.get("pool") for r in rs if r.get("actor") == actor} - {None}
+    return sorted({(r["actor"], r["pool"]) for r in rs
+                   if r.get("actor") and r["actor"] != actor and r.get("pool") in pools})
 
 
 def unavailable(extra: str | None = None) -> dict:

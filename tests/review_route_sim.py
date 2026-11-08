@@ -6,7 +6,8 @@
 Checks: the order's Route facts and Review tier set the review's tier and so the reviewer; a reviewer the
 Floor shows can't run is passed over, and RT4 by model lets a different model by the author's maker review;
 no reviewer able to run: nothing assigned, asked again later; a result waiting on a reviewer that has been
-down past HIVE_REVIEW_MOVE_SECONDS is moved, not before; a router that fails falls back to HIVE_REVIEWERS.
+down past HIVE_REVIEW_MOVE_SECONDS is moved, not before; a reviewer out of credits takes the others on its account
+(its pool) out with it, but not when it fails for its own reason; a router that fails falls back to HIVE_REVIEWERS.
 """
 import importlib.util, io, json, os, subprocess, sys, tempfile, time
 from pathlib import Path
@@ -28,6 +29,8 @@ TABLE = {
                       "tools": True, "kinds": ["review"], "actor": "reviewer.claude"},
         "astra-std": {"tier": "standard", "pool": "openai", "family": "gpt", "model": "gpt-6-astra", "tools": True,
                       "kinds": ["review"], "actor": "reviewer.astra"},
+        "sol": {"tier": "standard", "pool": "openai", "family": "gpt", "model": "gpt-5.6-sol", "tools": True,
+                "kinds": ["review"], "actor": "reviewer.sol"},
         "light": {"tier": "light", "pool": "claude", "family": "claude", "model": "claude-haiku-5-5", "tools": True,
                   "kinds": ["review"], "actor": "reviewer.light"},
         "bot": {"tier": "strong", "pool": "claude", "family": "claude", "model": "claude-opus-5-5", "tools": True,
@@ -38,7 +41,7 @@ TABLE = {
 (TMP / "table.json").write_text(json.dumps(TABLE))
 (TMP / "sources.json").write_text(json.dumps({"format": "hive-route.sources/1", "qualifications": str(TMP / "q.json")}))
 hr = ["uv", "run", "-q", "--frozen", "--project", ROUTE_DIR, "hive-route"]
-for rid in ("astra", "fable", "fable-std", "astra-std", "light"):
+for rid in ("astra", "fable", "fable-std", "astra-std", "sol", "light"):
     subprocess.run(hr + ["canary", "accept", str(TMP / "table.json"), rid, "--no-canary", "--by", "sim", "--reason",
                          "test", "--sources", str(TMP / "sources.json"), "--log", str(TMP / "accept.jsonl")],
                    check=True, capture_output=True)
@@ -89,8 +92,9 @@ class Resp(io.StringIO):
     def __exit__(self, *a): pass
 
 
+DETAIL: dict = {}
 rr.urllib.request.urlopen = lambda url, timeout=0: Resp(json.dumps({"bots": [
-    {"id": a, "now": {"state": s, "detail": f"{a} {s}"}} for a, s in FLOOR.items()]}))
+    {"id": a, "now": {"state": s, "detail": DETAIL.get(a, f"{a} {s}")}} for a, s in FLOOR.items()]}))
 
 
 def check(name, cond, detail=""):
@@ -139,6 +143,26 @@ check("down past HIVE_REVIEW_MOVE_SECONDS: moved to Fable", run(t) == ["reviewer
 EVENTS["mv"].append({"type": "review.recorded", "data": {"result_event": "ev-mv-0000000000"}})
 check("a recorded verdict: never moved", run(t) == [], logs[-3:])
 FLOOR.clear(); rr.read_floor()
+
+# a shared account at its limit: Sol out of credits takes Astra (same pool) out too, before Astra fails once
+FLOOR["reviewer.sol"] = "cantrun"
+DETAIL["reviewer.sol"] = "its model account hit a usage limit: ERROR: Your workspace is out of credits."
+check("Sol out of credits: a strong order skips Astra (same account) for Fable",
+      run(task("p1", "strong.md")) == ["reviewer.claude"], logs[-3:])
+check("... and the Floor-down reason names the shared account",
+      "shares the openai account with reviewer.sol" in rr.floor_note.get("reviewer.astra", ""), rr.floor_note)
+t = task("p2", "strong.md")
+EVENTS["p2"] = [{"type": "review.assigned", "recorded_at": "2026-11-05T00:00:00Z",
+                 "data": {"reviewer": "reviewer.astra", "result_event": "ev-p2-0000000000"}}]
+rr.read_floor(); rr.down_since["reviewer.astra"] = time.time() - 700
+check("a review already on Astra moves to Fable once its pool-mate's limit has lasted the wait",
+      run(t) == ["reviewer.claude"] and "moved off reviewer.astra" in logs[-1], logs[-3:])
+DETAIL["reviewer.sol"] = "no verdict from the review of t-9 (rc 1): AssertionError"
+rr.read_floor()
+check("Sol down for its own reason (not the account): Astra stays available",
+      "reviewer.astra" not in rr.down_since and run(task("p3", "strong.md")) == ["reviewer.astra"], logs[-3:])
+FLOOR.clear(); DETAIL.clear(); rr.read_floor()
+check("Sol back: nothing left down", not rr.down_since, rr.down_since)
 
 # a router that fails
 rr.TABLE = str(TMP / "missing.json")
