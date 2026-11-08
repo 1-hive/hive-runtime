@@ -153,6 +153,33 @@ def main():
     assert ob["last_step"] >= now - 31 and "episodes" not in ob and "requests" not in ob
     (oc / "sessions.json").write_text("[not an object]")
     assert "chat" not in mod.beacon_body(oconf, queue, now)
+    assert ob["problem"] is None
+
+    # its model account out of money: the last assistant turn failed with a billing error -> problem (error only)
+    def turns(*msgs):
+        (oc / "s-new.jsonl").write_text("".join(json.dumps({"type": "message", "message": m}) + "\n" for m in msgs))
+        os.utime(oc / "s-new.jsonl", (now - 30, now - 30))
+        return mod.beacon_body(oconf, queue, now)["problem"]
+    ask = {"role": "user", "content": [{"type": "text", "text": SECRET}]}
+    billing = {"role": "assistant", "content": [], "stopReason": "error", "errorMessage":
+               "429 {\"error\":{\"message\":\"This request would exceed your account's monthly spend limit.\"}}"}
+    p = turns(ask, billing)
+    assert p and p.startswith("its model account hit a usage limit: 429") and "spend limit" in p and SECRET not in p, p
+    warn = {"role": "assistant", "content": [{"type": "text", "text": "⚠️ anthropic (claude-opus-5-5) returned a billing "
+            "error — your API key has run out of credits or has an insufficient balance."}]}
+    assert "billing error" in turns(ask, warn)
+    assert turns(ask, billing, ask, {"role": "assistant", "content": [{"type": "text", "text": "done"}],
+                                     "stopReason": "stop"}) is None, "answered since: no problem"
+    assert turns(ask, {"role": "assistant", "content": [], "stopReason": "error", "errorMessage": "socket hang up"}) is None
+    assert turns(ask, {"role": "assistant", "content": [{"type": "text", "text": "Our spend limit is $50, per the note."}],
+                       "stopReason": "stop"}) is None, "a reply that mentions a limit isn't an error"
+    turns(ask, billing)
+    real_time = mod.time.time
+    mod.time.time = lambda: real_time() + 13 * 3600
+    try:
+        assert mod.beacon_body(oconf, queue, now)["problem"] is None, "a failed turn 13 h ago says nothing now"
+    finally:
+        mod.time.time = real_time
 
     # the reviewer runner's form: kind reviewer, reviewing and problem from the runner
     rconf = {"actor": "reviewer.astra", "hive_id": "test-hive", "key_file": str(key_file), "beacon": {"url": url}}

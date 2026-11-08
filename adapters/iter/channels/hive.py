@@ -804,14 +804,57 @@ def _outer_channel(d, since):
             "answers": [t for t in done if t >= since][-300:]}
 
 
-def _openclaw(d):
-    """An OpenClaw agent's sessions folder: the newest transcript's time, and the chat of the session
-    updated last (from sessions.json's keys, e.g. agent:main:telegram:group:-100…), if it says."""
+# An agent's model account out of money: the provider's or the gateway's words for it (not a passing rate limit)
+ACCOUNT_LIMIT_SIGNS = ("billing error", "spend limit", "out of credits", "run out of credits", "insufficient balance",
+                       "credit balance is too low", "usage limit", "insufficient_quota", "exceeded your current quota")
+ACCOUNT_LIMIT_FRESH = 12 * 3600   # an older failed turn says nothing about the account now
+ACCOUNT_LIMIT_PROBLEM = "its model account hit a usage limit"
+
+
+def _openclaw_limit(path, now):
+    """If the last assistant turn in this transcript failed on the model account's money (OpenClaw writes the failed
+    turn's error as the assistant message: stopReason "error" and errorMessage, or a "⚠️ …" text), that error's
+    first line, else None. Only the error is read back, never a reply or a prompt."""
+    if not path or now - (_stamp(path) or 0) > ACCOUNT_LIMIT_FRESH:
+        return None
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, os.path.getsize(path) - 262144))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        m = e.get("message") if isinstance(e, dict) and isinstance(e.get("message"), dict) else e
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        err = m.get("errorMessage") or m.get("error")
+        err = err.get("message") if isinstance(err, dict) else err
+        if not err:
+            texts = m.get("content") if isinstance(m.get("content"), list) else [m.get("content")]
+            text = " ".join(c.get("text", "") if isinstance(c, dict) else str(c or "") for c in texts).strip()
+            err = text if m.get("stopReason") == "error" or text.startswith("⚠️") else None
+        if not err or not any(s in str(err).lower() for s in ACCOUNT_LIMIT_SIGNS):
+            return None   # the last turn answered, or failed for another reason
+        return " ".join(str(err).split())[:140]
+    return None
+
+
+def _openclaw(d, now=None):
+    """An OpenClaw agent's sessions folder: the newest transcript's time, the chat of the session
+    updated last (from sessions.json's keys, e.g. agent:main:telegram:group:-100…), if it says, and a problem when
+    the newest transcript's last turn failed on the model account's money (so the Floor shows it can't run)."""
     try:
         files = [(t, n) for n in os.listdir(d) if n.endswith(".jsonl") for t in [_stamp(d / n)] if t]
     except OSError as e:
         return {"problem": f"can't read {d}: {e.strerror or e}"}
     out = {"last_step": max(files)[0] if files else None}
+    limit = _openclaw_limit(d / max(files)[1], now or time.time()) if files else None
+    if limit:
+        out["problem"] = f"{ACCOUNT_LIMIT_PROBLEM}: {limit}"
     try:
         sessions = json.loads((d / "sessions.json").read_text())
         newest = Path(max(files)[1]).stem if files else None
@@ -847,7 +890,7 @@ def beacon_body(conf, root, started, kind=None, extra=None):
             body["episodes"] = _episodes(hook, since)
         except OSError as e:
             problems.append(f"can't read {hook}: {e.strerror or e}")
-    for key, read in (("iter_channel", lambda d: _outer_channel(d, since)), ("openclaw_sessions", _openclaw)):
+    for key, read in (("iter_channel", lambda d: _outer_channel(d, since)), ("openclaw_sessions", lambda d: _openclaw(d, now))):
         if b.get(key):
             got = read(Path(b[key]))
             problems.append(got.pop("problem", None))
