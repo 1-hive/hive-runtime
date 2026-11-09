@@ -424,6 +424,21 @@ def emit(etype: str, task: str, data: dict, refs: list[str] = (), dry: bool = Fa
     log(f"{etype} {task} at position {ev['position']}")
 
 
+def review_sent_back(t: dict, events: list[dict]) -> bool:
+    """Whether the worker's attempt ended because a review failed its result: a failed (or
+    needs_information) review with no restart after it. latest_review keeps the last verdict until a
+    new result is reviewed, so once the supervisor has restarted the worker for it, a later attempt that
+    ends without a result is classed by how it ended (checkpoint, capacity, no result), not as another
+    failed check. Otherwise each such end counted as a failed review, pushing the route up a tier
+    (hive-route F8) and using up the attempts (1-hive ref-2-ladder, 2026-11-05: one failed review,
+    three restarts all called "the independent review sent the result back")."""
+    lr = t.get("latest_review") or {}
+    if lr.get("verdict") not in ("failed", "needs_information"):
+        return False
+    restarted = max((e["position"] for e in events if e["type"] == "task.restarted"), default=0)
+    return lr.get("position", 0) > restarted
+
+
 def restart(t: dict, events: list[dict], reason: str, cls: str, dry: bool) -> None:
     task, attempt = t["id"], (t.get("ext") or {}).get("attempt", 1)
     reports = [pin_path(r["pin"]) for e in events if e["type"] == "task.reported" for r in e.get("refs", [])]
@@ -600,7 +615,8 @@ def supervise(t: dict, now: float, dry: bool) -> None:
         if now - pid_start < 120:
             return
         hist = json.loads(hive("task", task))["events"]
-        if (t.get("latest_review") or {}).get("verdict") not in ("failed", "needs_information"):
+        sent_back = review_sent_back(t, hist)
+        if not sent_back:
             cp = take_checkpoint(t, n, pid_start, hist, dry)
             if cp:
                 restart(t, hist, f"the worker asked to be routed again ({cp['direction']}): {cp['reason']}",
@@ -614,7 +630,7 @@ def supervise(t: dict, now: float, dry: bool) -> None:
         cls = failure_class(task, "worker", n)
         why = ("the worker hit a usage or quota limit" if cls == "capacity"
                else "the worker's process ended without posting a result")
-        if (t.get("latest_review") or {}).get("verdict") in ("failed", "needs_information"):
+        if sent_back:
             cls, why = "failed_check", "the independent review sent the result back"
         restart(t, hist, why, cls, dry)
         return
