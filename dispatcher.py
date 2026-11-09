@@ -31,7 +31,8 @@ its process ended without a verdict on a usage or quota limit (class `capacity`:
 then holds that pool, so the router picks another or waits; the supervisor tells the operator
 if it keeps happening).
 
-Skipped: tasks with an open escalation (the chief of staff is handling them). The verdict
+Skipped: tasks with an open escalation (the chief of staff is handling them), except a result
+posted after the escalation, which is reviewed anyway (`held()`). The verdict
 goes straight to the record; a failed review restarts the worker (supervisor), a passed
 one waits for the chief of staff to close the task.
 
@@ -131,9 +132,22 @@ def relaunch_of(t: dict, events: list[dict]) -> tuple[str, str | None] | None:
     return None
 
 
+def held(t: dict) -> bool:
+    """An open escalation holds the task for the chief of staff, unless the task's current result was
+    posted after it: the result answers it (a "stuck" worker that reports back and posts), and the
+    review goes ahead while the chief of staff still sees the escalation. On the proto-hive (2026-11-08)
+    a stuck escalation from 02:12 held F3's 03:28 result for 13 hours, with nothing in the log, until
+    the chief of staff resolved it and assigned the review by hand."""
+    esc = (t.get("ext") or {}).get("escalation")
+    if not esc:
+        return False
+    cur = t.get("current_result") or {}
+    return not (t["status"] == "in_review" and cur.get("position", 0) > esc.get("position", 0))
+
+
 def needs_review(t: dict, events: list[dict]) -> bool:
     cur = (t.get("current_result") or {}).get("event_id")
-    if t["status"] != "in_review" or not cur or (t.get("ext") or {}).get("escalation"):
+    if t["status"] != "in_review" or not cur or held(t):
         return False
     if any(e["type"] == "review.recorded" and (e.get("data") or {}).get("result_event") == cur for e in events):
         return False
@@ -354,7 +368,7 @@ def tick(dry: bool, retry_at: dict) -> None:
 
 def handle(t: dict, state: dict, dry: bool, retry_at: dict) -> None:
     """Launch what one task needs: its worker, a worker to read an answer, or its reviewer."""
-    if (t.get("ext") or {}).get("escalation"):
+    if held(t):
         return
     if long_lived(t.get("owner")) and t["status"] != "in_review":
         return      # its sidecar delivers assignments and answers; nothing to launch
