@@ -121,9 +121,22 @@ def log(msg):
 
 
 DELIVER = None   # a command (list) run per message with {text} filled in, instead of the inbox file
+# How the agent sees the sidecar's paths, longest first (config "agent_paths": {"<sidecar's>": "<agent's>"}): a sidecar
+# outside the agent's container names its own paths (on vm2 /opt/proto-hive-runtime/..., which the container mounts
+# at /hive/...), and the agent can't find them (11-09: ProtoMegaBot2 looked for the accept message's clone path).
+AGENT_PATHS = []
+MAX_ATTACHMENTS = 50
+
+
+def as_agent(text):
+    """Text for the agent, with the sidecar's paths as the agent sees them."""
+    for mine, theirs in AGENT_PATHS:
+        text = text.replace(mine, theirs)
+    return text
 
 
 def tell(text):
+    text = as_agent(text)
     if DELIVER:
         cmd = [text if a == "{text}" else a for a in DELIVER]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
@@ -292,6 +305,40 @@ class Hive:
         if not text:
             return f"({where}: not readable in {clone})"
         return f"({where})\n{text[:MAX_TEXT]}" + ("\n[... truncated]" if len(text) > MAX_TEXT else "")
+
+    def attachments(self, tid, pin):
+        """The files in the folder beside an order (orders/<name>.md: orders/<name>/), at the order's commit, copied
+        into the agent's folder (.runtime/hive/attachments/<task>/), where it can read them; their paths. An order's
+        text reaches the agent in its message, but files beside it did not (11-09: ProtoMegaBot2 blocked on the review
+        attached to its M0 review-fixes order, and the chief of staff pasted a digest of it)."""
+        if not pin or pin.get("repository") != self.ws["repository"] or not str(pin.get("path", "")).endswith(".md"):
+            return []
+        sha, folder, clone = pin.get("commit_oid", "").split(":")[-1], pin["path"][:-3], self.ws["clone"]
+        names = [n for n in self.git(clone, "ls-tree", "-r", "--name-only", sha, "--", folder + "/",
+                                     check=False).splitlines() if n.startswith(folder + "/")]
+        out, dest = [], RUN / "attachments" / tid
+        for n in names[:MAX_ATTACHMENTS]:
+            r = subprocess.run(["git", "-C", str(clone), "show", f"{sha}:{n}"], env=self.env, capture_output=True,
+                               timeout=300)
+            if r.returncode:
+                continue
+            f = dest / n[len(folder) + 1:]
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(r.stdout)
+            out.append(f)
+        return out
+
+    def order_text(self, tid, pin):
+        """An order for the agent's message: its text, then the files attached to it, if any."""
+        text = self.read_pin(pin)
+        try:
+            files = self.attachments(tid, pin)
+        except (Failed, OSError, subprocess.TimeoutExpired) as e:
+            return text + f"\n\n(Files attached beside the order couldn't be copied for you: {e})"
+        if not files:
+            return text
+        return (text + "\n\nAttached to the order, copied for you to read (in full, as the order says): "
+                + "".join(f"\n- {f}" for f in files))
 
     def order(self, pid, text):
         """Commit a proposed task's order to the workspace (proposals/), push it, and return its pin."""
@@ -618,7 +665,7 @@ def poll(h):
                 why = "closed after a passed review" if t["status"] == "done" else "cancelled"
                 tell(f"Task {tid} ({t.get('title', '')}) is {why}: nothing more to do on it.")
             if t["status"] == "assigned" and prev.get("status") != "assigned":
-                tell(f"New task {tid} for you: {t.get('title', '')}\nOrder: {h.read_pin(t.get('order'))}\n\n"
+                tell(f"New task {tid} for you: {t.get('title', '')}\nOrder: {h.order_text(tid, t.get('order'))}\n\n"
                      f"Accept it with hive_task(action='accept', task='{tid}', text='', extra='') when you start.")
             b = t.get("block") or {}
             ans = next((v for v in b.values() if isinstance(v, dict) and "commit_oid" in v), None)
@@ -639,7 +686,7 @@ def poll(h):
             now["to_review"] = cr.get("event_id")
             if prev.get("to_review") != cr.get("event_id"):
                 tell(f"Review {tid} ({t.get('title', '')}): its result by {cr.get('author')} against its order.\n"
-                     f"Order: {h.read_pin(t.get('order'))}\n\nResult: {h.read_pin(cr.get('pin'))}\n\n"
+                     f"Order: {h.order_text(tid, t.get('order'))}\n\nResult: {h.read_pin(cr.get('pin'))}\n\n"
                      f"Record your verdict with hive_task(action='review', task='{tid}', text='<findings>', "
                      f"extra='passed|failed|needs_information').")
         if now:
@@ -1017,6 +1064,7 @@ def daemon():
         return
     start_beacon(h.c)
     DELIVER = h.c.get("deliver") or None             # e.g. ["openclaw", "agent", "exec", "--agent", "main", "--message", "{text}"]
+    AGENT_PATHS[:] = sorted((h.c.get("agent_paths") or {}).items(), key=lambda kv: -len(kv[0]))
     every = int(h.c.get("poll_seconds", 30))
     declare_every = int(h.c.get("declare_seconds", 600))   # 0: never
     next_poll = next_declare = 0.0
@@ -1028,7 +1076,7 @@ def daemon():
             except (FileNotFoundError, ValueError):
                 continue
             # hive-task waits on the inbox for its outcome; delivering it as a new turn would leave it waiting
-            answer = (lambda t: _put(INBOX, t)) if req.get("reply") == "inbox" else tell
+            answer = (lambda t: _put(INBOX, as_agent(t))) if req.get("reply") == "inbox" else tell
             try:
                 answer(f"OK: {do(h, req)}")
             except (Failed, subprocess.TimeoutExpired, KeyError) as e:
