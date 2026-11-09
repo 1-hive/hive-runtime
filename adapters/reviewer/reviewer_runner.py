@@ -16,11 +16,12 @@ It watches the record for results assigned to this reviewer that it hasn't judge
 (the order, the result, each repository's base..code range), runs the command, and takes the verdict
 from its output: the last line that reads `VERDICT: passed|failed|needs_information`. The output is
 the review report, committed to the workspace and recorded as review.recorded, citing the result (A5).
-A run that gives no verdict is retried later; nothing is recorded for it.
+A run that gives no verdict is retried later; nothing is recorded for it. So is a run whose verdict comes with
+almost nothing before it (under MIN_REVIEW characters): a verdict without its findings and checks isn't a review.
 
 With "beacon": {"url": ...} in the config (adapters/iter/README.md, Beacons), it posts a signed beacon of
 kind "reviewer" every 30 s: "reviewing" (the task and since when) while a review command runs, and
-"problem" after a run that timed out, couldn't start or gave no verdict (the output's last error line, else its last line,
+"problem" after a run that timed out, couldn't start, gave no verdict or a verdict without a review (the output's last error line, else its last line,
 cut to 200 characters; "its model account hit a usage limit: <the line>" when the output says so), cleared by the next
 run that gives one. The Floor then shows the reviewer as unable to run, and tells the operators once.
 """
@@ -39,6 +40,17 @@ VERDICT = re.compile(r"^\s*VERDICT:\s*(passed|failed|needs_information)\s*$", re
 # A model account out of usage, spend or credit (Claude Code, Codex, the API); as supervisor.py's CAPACITY_SIGNS
 LIMIT_SIGNS = ("out of credits", "session limit", "usage limit", "rate limit", "hit your limit", "spend limit",
                "credit balance is too low", "insufficient_quota", "quota exceeded", "exceeded your current quota")
+# The least a review says before its verdict line, in characters other than whitespace. A real review (findings with
+# evidence, what was re-run) runs to thousands; on 11-09 reviewer.claude's whole saved output was two sentences ("the
+# review above is complete and final. VERDICT: passed") because a background monitor woke the session after its review,
+# and `claude -p` keeps only the last message.
+MIN_REVIEW = 400
+
+
+def thin_review(out: str) -> bool:
+    """True when the text before the output's last VERDICT line is too short to hold findings and checks."""
+    m = list(VERDICT.finditer(out))
+    return bool(m) and len(re.sub(r"\s", "", out[:m[-1].start()])) < MIN_REVIEW
 
 
 def limit_line(out: str) -> str | None:
@@ -179,6 +191,10 @@ def main():
                     limit = limit_line(out)
                     doing["problem"] = (f"its model account hit a usage limit: {limit}" if limit else
                                         f"no verdict from the review of {t['id']} (rc {r.returncode}): {last}")[:200]
+                    continue
+                if thin_review(out):
+                    mod.log(f"review of {t['id']}: a verdict with no review before it; retry in {retry}s")
+                    doing["problem"] = f"the review of {t['id']} gave a verdict with no findings or checks"[:200]
                     continue
                 doing["problem"] = None
                 verdict = m[-1].lower()
