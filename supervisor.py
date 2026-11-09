@@ -71,7 +71,7 @@ MAX_NUDGES = 2
 MAX_CHECKPOINTS = 3  # routing checkpoints per task
 # Long-lived agents (HIVE_LONG_LIVED_ACTORS: comma-separated actor-id patterns, e.g. "worker.*,reviewer.astra"):
 # no process to watch, nothing to relaunch. The ladder is nudge, nudge, escalate to the chief of staff, who
-# reassigns. A result they must review that waits longer than HIVE_REVIEW_WAIT_SECONDS is escalated too.
+# reassigns. An owner the Floor shows can't run gets no nudges and one escalation, until it is active again. A result they must review that waits longer than HIVE_REVIEW_WAIT_SECONDS is escalated too.
 LONG_LIVED = [p.strip() for p in os.environ.get("HIVE_LONG_LIVED_ACTORS", "").split(",") if p.strip()]
 REVIEW_WAIT_S = int(os.environ.get("HIVE_REVIEW_WAIT_SECONDS", 7200))
 # A long-lived reviewer reviews one result at a time, so a result can wait in its queue for hours. The wait is
@@ -155,6 +155,19 @@ def supervise_long_lived(t: dict, now: float, dry: bool) -> None:
         what = "no activity"
     if not limit or not since or now - since <= limit + GRACE:
         return
+    down = cant_run(t.get("owner"))
+    if down is not None:
+        # An owner the Floor shows can't run (its model account at a limit, ...) can't answer a nudge, and a "stuck"
+        # escalation every check-in window only spends the chief of staff's turns: on 11-09 M0 was escalated seven
+        # times while ProtoMegaBot2's account was at its spend limit, each a cos turn on the shared account. One
+        # escalation that says why; then quiet until the owner is active again (the Floor alerts the operators).
+        hist = json.loads(hive("task", task))["events"]
+        if last_escalation(hist) >= since:   # escalated, or an escalation resolved, since the owner's last activity
+            return
+        emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck",
+                                      "reason": f"{what} for {int((now - since) / 60)} min; {t.get('owner')} "
+                                                f"can't run: {down}"[:500]}, dry=dry)
+        return
     nudges = ext.get("nudges_since_activity", 0)
     if nudges < MAX_NUDGES:
         hist = json.loads(hive("task", task))["events"]
@@ -189,6 +202,12 @@ def reviewing(actor: str) -> tuple[str, float | None] | None:
     m = re.match(r"^Reviewing (\S+)$", st.get("headline") or "")
     task = st.get("task") or (m.group(1) if m else None)
     return (task, st.get("since")) if task else None
+
+
+def cant_run(actor: str | None) -> str | None:
+    """Why, when the Floor shows the agent can't run now (e.g. "its model account hit a usage limit: ..."), else None."""
+    st = FLOOR_NOW.get(actor or "") or {}
+    return (st.get("detail") or "can't run") if st.get("state") == "cantrun" else None
 
 
 def last_escalation(hist: list[dict]) -> float:

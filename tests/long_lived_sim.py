@@ -93,6 +93,23 @@ EVENTS["t1"] = [{"type": "task.nudged", "recorded_at": iso(NOW - 1000)}, {"type"
 t.update(status="assigned", assigned_at=iso(NOW - 2000)); t["ext"]["nudges_since_activity"] = 2; emitted.clear()
 sup.supervise(t, NOW, False)
 check("stuck, resolved without a reassignment: wait a check-in window", not emitted, emitted)
+# an owner the Floor shows can't run: no nudges, one escalation that says why, then quiet (11-09: M0 escalated
+# seven times, every 30 min, while ProtoMegaBot2's model account was at its spend limit)
+lim = "its model account hit a usage limit: This request would exceed your account's monthly spend limit."
+c = {"id": "t4", "status": "in_progress", "owner": "worker.protomegabot2", "assigned_at": iso(NOW - 9000),
+     "last_activity": {"at": iso(NOW - 5000)}, "ext": {"lease": lease, "nudges_since_activity": 0}, "title": "m0"}
+sup.FLOOR_NOW["worker.protomegabot2"] = {"state": "cantrun", "headline": "Can't run", "detail": lim}
+EVENTS["t4"] = []; emitted.clear(); sup.supervise(c, NOW, False)
+check("can't run: escalated at once, no nudge, saying why", len(emitted) == 1 and emitted[0][0] == "task.escalated"
+      and "can't run: its model account hit a usage limit" in emitted[0][2]["reason"], emitted)
+EVENTS["t4"] = [{"type": "task.escalated", "recorded_at": iso(NOW - 1800)}, {"type": "task.escalation_resolved", "recorded_at": iso(NOW - 1700)}]
+emitted.clear()
+for k in range(8): sup.supervise(c, NOW + k * 1800, False)
+check("still can't run, escalation resolved: no more escalations or nudges for 4 h", not emitted, emitted)
+del sup.FLOOR_NOW["worker.protomegabot2"]; c["ext"]["nudges_since_activity"] = 0
+sup.supervise(c, NOW, False)
+check("can run again, still silent: the usual ladder (a nudge)", emitted and emitted[-1][0] == "task.nudged", emitted)
+sup.FLOOR_NOW.clear()
 # dispatcher
 state = {"tasks": {}, "goals": {}}
 emitted.clear(); launched.clear()
