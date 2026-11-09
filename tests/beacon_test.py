@@ -74,7 +74,9 @@ def main():
             {"at": iso(now - 3600), "event": "routed", "episode": "e1", "model": "claude-opus-5-5", "key": "k", "task": "t"},
             {"at": iso(now - 3000), "event": "end_skipped_no_token", "episode": "e1"},
             {"at": iso(now - 2400), "event": "ended", "episode": "e1", "models": ["claude-opus-5-5"]},
-            {"at": iso(now - 120), "event": "routed", "episode": "e2", "model": "claude-sonnet-5-5"}]
+            {"at": iso(now - 120), "event": "routed", "episode": "e2", "model": "claude-sonnet-5-5"},
+            # a turn that died without "ended" (11-08, the spend limit): not open 7 h later
+            {"at": iso(now - 7 * 3600), "event": "routed", "episode": "dead", "model": "claude-opus-5-5"}]
     (root / "route-hook.jsonl").write_text("\n".join(map(json.dumps, hook)) + "\nnot json\n")
     # its outer channel: one claimed request (whose prompt must stay here), two waiting, two answered
     ch = tmp / "iter-channel"

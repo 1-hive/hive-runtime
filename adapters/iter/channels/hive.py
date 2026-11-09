@@ -734,6 +734,10 @@ def declare(h):
 
 DAY = 86400
 TAIL_BYTES = 2_000_000                               # of a route hook log, read per beacon
+# A route-hook episode with no "ended" this long after it was routed is a turn that died (on 11-08 nine of ProtoMegaBot2's
+# turns failed on its account's spend limit and never logged "ended"; the Floor then showed it "active" for 22 h).
+# Its longest finished episode so far: 2 h 21 min.
+OPEN_MAX = 6 * 3600
 SESSION_CHAT = re.compile(r"(?:group|channel|direct|dm):(-?\d+)")
 
 
@@ -751,9 +755,10 @@ def _epoch(s):
     return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
 
 
-def _episodes(hook, since):
+def _episodes(hook, since, now=None):
     """[start, end or None, model] per route-hook episode ending (or, if open, starting) after `since`,
-    oldest first: a "routed" line paired with the later "ended" of the same episode (as time_split.py)."""
+    oldest first: a "routed" line paired with the later "ended" of the same episode (as time_split.py). An episode
+    still open OPEN_MAX after it was routed is left out: it died without logging its end."""
     size = hook.stat().st_size
     with hook.open("rb") as f:
         f.seek(max(0, size - TAIL_BYTES))
@@ -775,7 +780,9 @@ def _episodes(hook, since):
             r = open_.pop(ep)
             r[1] = at
             out.append(r)
-    out = sorted([r for r in out + list(open_.values()) if (r[1] or r[0]) >= since], key=lambda r: r[0])
+    now = time.time() if now is None else now
+    live = [r for r in open_.values() if now - r[0] <= OPEN_MAX]
+    out = sorted([r for r in out + live if (r[1] or r[0]) >= since], key=lambda r: r[0])
     return out[-200:]
 
 
@@ -927,7 +934,7 @@ def beacon_body(conf, root, started, kind=None, extra=None):
     hook = Path(b["route_hook"]) if b.get("route_hook") else root / "route-hook.jsonl"
     if b.get("route_hook") or hook.is_file():
         try:
-            body["episodes"] = _episodes(hook, since)
+            body["episodes"] = _episodes(hook, since, now)
         except OSError as e:
             problems.append(f"can't read {hook}: {e.strerror or e}")
         limit = _route_limit(hook, now)
