@@ -12,7 +12,8 @@ registry, workspace, repos), plus:
     "poll_seconds": default 30;  "timeout_seconds": default 5400;  "retry_seconds": default 900
     "review_notes": text (or lines) added to every kickoff, e.g. how to set up a clone to run its tests
 
-It watches the record for results assigned to this reviewer that it hasn't judged, writes a kickoff
+It watches the record for results assigned to this reviewer that it hasn't judged (or that were assigned to it again
+after its review), writes a kickoff
 (the order, the result, each repository's base..code range), runs the command, and takes the verdict
 from its output: the last line that reads `VERDICT: passed|failed|needs_information`. The output is
 the review report, committed to the workspace and recorded as review.recorded, citing the result (A5).
@@ -51,6 +52,14 @@ def thin_review(out: str) -> bool:
     """True when the text before the output's last VERDICT line is too short to hold findings and checks."""
     m = list(VERDICT.finditer(out))
     return bool(m) and len(re.sub(r"\s", "", out[:m[-1].start()])) < MIN_REVIEW
+
+
+def assigned_again(evs, lr: dict, actor: str) -> bool:
+    """True when a task's events assign its review to actor again after lr, actor's own latest review of it: whoever
+    assigns reviews sent the review back to the same reviewer (on 11-09 the CoS did, after a review with no findings,
+    and the runner, which skipped every task it had already reviewed, never ran it)."""
+    return any(e.get("type") == "review.assigned" and (e.get("data") or {}).get("reviewer") == actor
+               and (e.get("position") or 0) > (lr.get("position") or 0) for e in evs)
 
 
 def limit_line(out: str) -> str | None:
@@ -149,6 +158,7 @@ def main():
     h = mod.Hive(c)
     every, timeout, retry = int(c.get("poll_seconds", 30)), int(c.get("timeout_seconds", 5400)), int(c.get("retry_seconds", 900))
     tried = {}   # result event -> when last tried without a verdict
+    again = {}   # (task, its revision) -> whether its review was assigned to this reviewer again since its own review
     doing = {"reviewing": None, "problem": None}   # for the beacon
     mod.start_beacon(c, kind="reviewer", extra=lambda: dict(doing))
     mod.log(f"reviewer runner up as {h.actor}")
@@ -159,8 +169,17 @@ def main():
                 cr = t.get("current_result") or {}
                 lr = t.get("latest_review") or {}
                 if (t.get("assigned_reviewer") != h.actor or t["status"] != "in_review" or not cr
-                        or lr.get("reviewer") == h.actor or time.time() - tried.get(cr["event_id"], 0) < retry):
+                        or time.time() - tried.get(cr["event_id"], 0) < retry):
                     continue
+                if lr.get("reviewer") == h.actor:   # reviewed it already: again only if assigned to it again since
+                    k = (t["id"], t.get("revision"))   # a new assignment is a new revision
+                    if k not in again:
+                        try:
+                            again[k] = assigned_again(json.loads(h.hive("task", t["id"])).get("events") or [], lr, h.actor)
+                        except (mod.Failed, ValueError):
+                            continue
+                    if not again[k]:
+                        continue
                 tried[cr["event_id"]] = time.time()
                 kf = mod.RUN / "kickoffs" / f"{t['id']}-{cr['event_id'][:8]}.md"
                 kf.parent.mkdir(parents=True, exist_ok=True)
