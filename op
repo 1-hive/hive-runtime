@@ -12,6 +12,8 @@
 #   op budget <goal> <hours>    wall-clock budget: <hours> from now (other limits kept); resolves an over-budget alert
 #   op events [n]               the last n events (default 20), one line each
 #   op add-key <public-key>     add a key to the operator (e.g. the Telegram bridge's)
+#   op review <task> [reviewer] ask for an independent review of the task's current result (again, after a
+#                               verdict, for a second opinion); default: the first of HIVE_REVIEWERS that isn't its author
 set -euo pipefail
 export HIVE_URL=${HIVE_URL:-http://127.0.0.1:8470} HIVE_ID=${HIVE_ID:-1-hive}
 export HIVE_KEY_FILE=${HIVE_KEY_FILE:-${HIVE_CONFIG_DIR:-$HOME/.config/hive}/operator.key} HIVE_VIA=${HIVE_VIA:-op}
@@ -57,6 +59,23 @@ print((g.get("escalation") or {}).get("code") or "")' "$1" "$2") || exit 1
            if [ "$(tail -1 <<<"$data")" = budget_exceeded ]; then
              emit goal.escalation_resolved "$1" "$(json resolution "Budget raised: $2 more hours")"
            fi ;;
+  review)  need "review <task> [reviewer]" "${1:-}"
+           data=$("$HIVE" task "$1" | python3 -c '
+import json, os, sys
+t = json.load(sys.stdin)["task"]
+cur = t.get("current_result") or {}
+tid, st = t["id"], t["status"]
+if st != "in_review" or not cur:
+    sys.exit(f"{tid} is {st}: only a result waiting in review can be reviewed")
+pool = [r.strip() for r in (os.environ.get("HIVE_REVIEWERS") or "reviewer.codex.1,reviewer.claude.1").split(",") if r.strip()]
+rv = sys.argv[1] or next((r for r in pool if r != cur.get("author")), "")
+if not rv or rv == cur.get("author"):
+    sys.exit("no reviewer other than the author: name one")
+print(json.dumps({"reviewer": rv, "result_event": cur["event_id"]}))
+print(cur["event_id"])' "${2:-}") || exit 1
+           out=$("$HIVE" emit review.assigned --task "$1" --cause-event "$(tail -1 <<<"$data")" --data "$(head -1 <<<"$data")" 2>&1) \
+             && python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); print("ok: review.assigned", e["task"], "->", e["data"]["reviewer"], "at position", e["position"], "(the dispatcher launches it)")' <<<"$out" \
+             || { echo "refused: $out" >&2; exit 1; } ;;
   events)  "$HIVE" events 2>/dev/null | tail -n "${1:-20}" | python3 -c '
 import json, sys
 for l in sys.stdin:

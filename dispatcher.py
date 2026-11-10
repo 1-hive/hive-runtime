@@ -31,10 +31,14 @@ its process ended without a verdict on a usage or quota limit (class `capacity`:
 then holds that pool, so the router picks another or waits; the supervisor tells the operator
 if it keeps happening).
 
+A review assigned again after a verdict on the same result (`op review`, or the chief of staff, for a second
+opinion) is launched like a new one; its verdict becomes the task's latest review.
+
 Skipped: tasks with an open escalation (the chief of staff is handling them), except a result
 posted after the escalation, which is reviewed anyway (`held()`). The verdict
-goes straight to the record; a failed review restarts the worker (supervisor), a passed
-one waits for the chief of staff to close the task.
+goes straight to the record; the worker, waiting in its own session (review-wait.py; R5), fixes a
+failed one there; if its session has ended, the supervisor restarts it. A passed one waits for the
+chief of staff to close the task.
 
     dispatcher.py [--interval 60] [--once] [--dry-run]
 """
@@ -69,7 +73,7 @@ WORKER_KICKOFF = """You are **{owner}** in the 1-hive record, assigned task **{t
 
 Read first: `{{DIR}}/WORKER-CONTRACT.md`, then, in `{{DIR}}/workspace` (pull main first), your order `{order_path}` and its goal `{goal_path}`.
 
-Before any `hive` or `hive-pin` command: `source {{DIR}}/hive.env` (your key only). {repos_line} Follow the contract's "Running mode": never end your session to wait; run long steps in the foreground, in pieces up to 10 minutes.
+Before any `hive` or `hive-pin` command: `source {{DIR}}/hive.env` (your key only). {repos_line} Follow the contract's "Running mode": never end your session to wait; run long steps in the foreground, in pieces up to 10 minutes. After you post your result, wait for its independent review in this session (`python3 {{DIR}}/review-wait.py {task}`; contract, "Lifecycle" 6).
 """
 
 ANSWERED_KICKOFF = """You are **{owner}**, relaunched on task **{task}** ("{title}"; goal `{goal}`, project `{project}`), in a new container of your own. You were blocked, and your question has been answered: the answer is `{answer_path}` in the workspace (pull main), also on the record (`hive task {task}`, the latest `task.answered`).
@@ -77,7 +81,7 @@ ANSWERED_KICKOFF = """You are **{owner}**, relaunched on task **{task}** ("{titl
 Your task folder `{{DIR}}` is as you left it, but this is a fresh container: anything you ran in the last one is gone.
 
 1. `source {{DIR}}/hive.env`, read the answer, then emit `task.unblocked`.
-2. Continue the order: `{{DIR}}/workspace/{order_path}`. Read `{{DIR}}/WORKER-CONTRACT.md` again, especially "Running mode".
+2. Continue the order: `{{DIR}}/workspace/{order_path}`. Read `{{DIR}}/WORKER-CONTRACT.md` again, especially "Running mode" and "Lifecycle" 6 (after posting, wait for the review in this session with `review-wait.py`).
 """
 CODE_HOME = os.environ.get("HIVE_DEFAULT_REPO") or "mtg-player"   # the repository every task folder holds; others come as EXTRA_REPOS
 
@@ -149,10 +153,12 @@ def needs_review(t: dict, events: list[dict]) -> bool:
     cur = (t.get("current_result") or {}).get("event_id")
     if t["status"] != "in_review" or not cur or held(t):
         return False
-    if any(e["type"] == "review.recorded" and (e.get("data") or {}).get("result_event") == cur for e in events):
-        return False
-    return not any(e["type"] == "review.assigned" and (e.get("data") or {}).get("result_event") == cur
-                   for e in events) or relaunch_of(t, events) is not None
+    of = lambda typ: [i for i, e in enumerate(events)   # events are in record order
+                      if e["type"] == typ and (e.get("data") or {}).get("result_event") == cur]
+    recorded, assigned = of("review.recorded"), of("review.assigned")
+    if recorded and (not assigned or max(assigned) < max(recorded)):
+        return False   # reviewed, and no review asked for since (`op review` or the chief of staff may ask again)
+    return not assigned or relaunch_of(t, events) is not None
 
 
 def kickoff(t: dict, reviewer: str, state: dict) -> Path:

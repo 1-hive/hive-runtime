@@ -458,6 +458,26 @@ def review_sent_back(t: dict, events: list[dict]) -> bool:
     return lr.get("position", 0) > restarted
 
 
+def verdict_is_recent(t: dict, now: float, every: int) -> bool:
+    """A worker that waited in its own session for its review (worker contract, "Lifecycle" 6; R5) was quiet on
+    the record by design while the reviewer worked: after a verdict it hasn't acted on yet, its silence counts
+    from the verdict, not from the result it posted. Otherwise a review longer than the check-in interval got
+    the worker nudged, and after two nudges stopped, just as the verdict reached it."""
+    lr = t.get("latest_review") or {}
+    if not lr or lr.get("position", 0) <= ((t.get("last_activity") or {}).get("position") or 0):
+        return False
+    hist = json.loads(hive("task", t["id"]))["events"]
+    at = next((ts(e["recorded_at"]) for e in hist if e["position"] == lr["position"]), None)
+    return bool(at) and now - at <= every + GRACE
+
+
+def reviewed_since_assigned(hist: list[dict]) -> bool:
+    """Whether a verdict was recorded after the latest review assignment (a review asked for again by hand,
+    `op review`, may follow an earlier verdict on the same result)."""
+    asg = max((e["position"] for e in hist if e["type"] == "review.assigned"), default=0)
+    return any(e["type"] == "review.recorded" and e["position"] > asg for e in hist)
+
+
 def restart(t: dict, events: list[dict], reason: str, cls: str, dry: bool) -> None:
     task, attempt = t["id"], (t.get("ext") or {}).get("attempt", 1)
     reports = [pin_path(r["pin"]) for e in events if e["type"] == "task.reported" for r in e.get("refs", [])]
@@ -489,7 +509,7 @@ Read, in order:
 3. Your latest reports, which say where you were:
 {chr(10).join(f"   - `{{DIR}}/workspace/{p}`" for p in dict.fromkeys(reports[-3:])) or "   - (none posted)"}
 
-Then: `source {{DIR}}/hive.env`, pull the workspace, post a checkpoint that says you were restarted, and finish the order. Stop anything left running from the previous attempt (containers, games) before starting new ones.
+Then: `source {{DIR}}/hive.env`, pull the workspace, post a checkpoint that says you were restarted, and finish the order. After posting your result, wait for its review in this session: `python3 {{DIR}}/review-wait.py {task}` (contract, "Lifecycle" 6). Stop anything left running from the previous attempt (containers, games) before starting new ones.
 """
     if dry:
         log(f"DRY restart {task} ({cls}): {reason}")
@@ -598,9 +618,11 @@ def supervise(t: dict, now: float, dry: bool) -> None:
     if t["status"] == "in_review":
         rv = t.get("assigned_reviewer")
         att = latest_attempt(task, "review")
-        if rv and not t.get("latest_review") and att and not alive(att[1]):
+        if rv and att and not alive(att[1]):
             hist = json.loads(hive("task", task))["events"]
-            assigned = max((ts(e["recorded_at"]) for e in hist if e["type"] == "review.assigned"), default=0)
+            if reviewed_since_assigned(hist):
+                return
+            assigned =max((ts(e["recorded_at"]) for e in hist if e["type"] == "review.assigned"), default=0)
             pid_time = (ROUTE / f"{task}-review" / f"review.{att[0]}.pid").stat().st_mtime
             if pid_time >= assigned - 60 and failure_class(task, "review", att[0]) == "capacity":
                 # The dispatcher relaunches it; tell the operator only when it keeps happening.
@@ -654,6 +676,8 @@ def supervise(t: dict, now: float, dry: bool) -> None:
         restart(t, hist, why, cls, dry)
         return
     if now - since <= every + GRACE:
+        return
+    if verdict_is_recent(t, now, every):
         return
     nudges = ext.get("nudges_since_activity", 0)
     if nudges < MAX_NUDGES:

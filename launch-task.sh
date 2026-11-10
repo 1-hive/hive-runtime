@@ -122,6 +122,7 @@ EOF
 fi
 cp "$RUNTIME_DIR/docs/worker-contract.md" "$DIR/WORKER-CONTRACT.md"
 cp "$RUNTIME_DIR/result-refs.sh" "$DIR/result-refs.sh"
+cp "$RUNTIME_DIR/review-wait.py" "$DIR/review-wait.py"   # a worker waits for its review in its own session (R5)
 sed "s#{DIR}#$DIR#g" "$KICKOFF" > "$DIR/KICKOFF.md"
 git -C "$DIR/workspace" pull -q --ff-only || true
 cd "$DIR"
