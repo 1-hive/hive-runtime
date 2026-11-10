@@ -35,6 +35,9 @@ CLAUDE_P=$CLAUDE   # headless calls (chat); setup may route them through claude-
 setup() {
   [ "$RT" != podman ] || id "$U" >/dev/null 2>&1 || { echo "no OS user $U: sudo $RUNTIME_DIR/agent-users.sh cos" >&2; exit 2; }
   mkdir -p "$D/chat" "$D/.claude-state" "$D/followups"
+  # Files to send in a chat reply ([[file: /cos/outbox/…]]): the bridge reads them here (hive-bridge HIVE_COS_OUTBOX).
+  # Without a container, cos's folder may be private to it and the hive sets its own outbox (proto-hive: up.sh).
+  [ "$RT" = none ] || mkdir -p "$D/outbox"
   [ -d "$D/workspace/.git" ] || git clone -q "$HIVE_WORKSPACE_REPO" "$D/workspace"
   cp "${COS_ROLE_DOC:-$RUNTIME_DIR/docs/chief-of-staff.md}" "$D/CLAUDE.md"   # the role: 1-hive's, or e.g. docs/chief-of-staff-proto-hive.md
   if [ "$RT" = none ]; then
