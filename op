@@ -14,6 +14,8 @@
 #   op add-key <public-key>     add a key to the operator (e.g. the Telegram bridge's)
 #   op review <task> [reviewer] ask for an independent review of the task's current result (again, after a
 #                               verdict, for a second opinion); default: the first of HIVE_REVIEWERS that isn't its author
+#   op restart <task> [note]    a fresh attempt for a task escalated to you (e.g. repeated_failure): resolves the
+#                               escalation; the supervisor restarts the worker with the note, and counts attempts anew
 set -euo pipefail
 export HIVE_URL=${HIVE_URL:-http://127.0.0.1:8470} HIVE_ID=${HIVE_ID:-1-hive}
 export HIVE_KEY_FILE=${HIVE_KEY_FILE:-${HIVE_CONFIG_DIR:-$HOME/.config/hive}/operator.key} HIVE_VIA=${HIVE_VIA:-op}
@@ -75,6 +77,20 @@ print(json.dumps({"reviewer": rv, "result_event": cur["event_id"]}))
 print(cur["event_id"])' "${2:-}") || exit 1
            out=$("$HIVE" emit review.assigned --task "$1" --cause-event "$(tail -1 <<<"$data")" --data "$(head -1 <<<"$data")" 2>&1) \
              && python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); print("ok: review.assigned", e["task"], "->", e["data"]["reviewer"], "at position", e["position"], "(the dispatcher launches it)")' <<<"$out" \
+             || { echo "refused: $out" >&2; exit 1; } ;;
+  restart) need "restart <task> [note]" "${1:-}"
+           "$HIVE" task "$1" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)["task"]
+tid, st, esc = t["id"], t["status"], (t.get("ext") or {}).get("escalation")
+if st not in ("assigned", "in_progress"):
+    sys.exit(f"{tid} is {st}: only a task a worker holds (assigned or in progress) can be restarted")
+if not esc:
+    sys.exit(f"{tid} has no open escalation: the supervisor restarts it on its own when its worker ends")' || exit 1
+           note=${2:-}
+           out=$("$HIVE" emit task.escalation_resolved --task "$1" \
+                 --data "$(json resolution "$(printf 'Restart: %s' "$note" | cut -c1-500)")" 2>&1) \
+             && python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); print("ok: escalation resolved on", e["task"], "at position", e["position"], "(the supervisor restarts the worker within a minute or two)")' <<<"$out" \
              || { echo "refused: $out" >&2; exit 1; } ;;
   events)  "$HIVE" events 2>/dev/null | tail -n "${1:-20}" | python3 -c '
 import json, sys

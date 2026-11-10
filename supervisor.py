@@ -9,7 +9,10 @@ for each task a worker holds, applies the ladder:
    print-mode worker can't receive messages). After 2 nudges with no activity,
    stop it and restart (class `stalled`).
 3. A task already restarted 3 times                   -> task.escalated to the
-   operator (`repeated_failure`: an interrupt, PLAN D15), and the supervisor leaves it alone.
+   operator (`repeated_failure`: an interrupt, PLAN D15), and the supervisor leaves it alone,
+   unless the operator asks for a fresh attempt (`op restart <task> [note]`: the escalation
+   resolved with "Restart: <note>", signed by the operator). Then it restarts the worker (stopping
+   it first if it is still running), and the attempts count again from that restart.
 4. A reviewer's process ended without a verdict       -> task.escalated to the chief
    of staff (`other`), with why it ended (end_reason: stopped from outside, killed, lost its
    connection, the 90-minute limit, or unknown, and how long it ran); unless it hit a usage or quota limit: then the dispatcher relaunches
@@ -67,6 +70,7 @@ ENV = {**hp.tool_env(hp.CONFIG_DIR / "agents" / "supervisor.key", "supervisor"),
        "HIVEPIN_REPOSITORY_REGISTRY_PATH": str(HOME / "registry.json")}
 GRACE = 600          # seconds past the check-in interval before acting
 MAX_ATTEMPTS = 4     # attempt 1 + 3 restarts, then escalate
+RESTART_PREFIX = "Restart:"   # op restart: the operator's resolution that asks for a fresh attempt
 MAX_NUDGES = 2
 MAX_CHECKPOINTS = 3  # routing checkpoints per task
 # Long-lived agents (HIVE_LONG_LIVED_ACTORS: comma-separated actor-id patterns, e.g. "worker.*,reviewer.astra"):
@@ -458,6 +462,31 @@ def review_sent_back(t: dict, events: list[dict]) -> bool:
     return lr.get("position", 0) > restarted
 
 
+def restart_request(hist: list[dict]) -> dict | None:
+    """The operator's latest request for a fresh attempt (`op restart`): a task.escalation_resolved signed by
+    the operator whose resolution starts with RESTART_PREFIX. Only the supervisor may emit task.restarted,
+    and after a repeated_failure the task had no way back: reassigning it to the worker that owns it is refused
+    (INVALID_ASSIGNEE), and resolving the escalation got it escalated again at once (1-hive best-1-adopt-screen,
+    2026-11-10: the chief of staff cancelled it and opened a new task instead). Only the operator's counts:
+    repeated_failure is the operator's interrupt (PLAN D15)."""
+    return next((e for e in reversed(hist) if e["type"] == "task.escalation_resolved"
+                 and (e.get("actor") or {}).get("class") == "operator"
+                 and str((e.get("data") or {}).get("resolution", "")).startswith(RESTART_PREFIX)), None)
+
+
+def attempts_used(t: dict, hist: list[dict]) -> int:
+    """The attempts that count against MAX_ATTEMPTS. Routing checkpoints don't count; after the operator's
+    fresh attempt (`op restart`) the count starts again: that restart is attempt 1."""
+    attempt = (t.get("ext") or {}).get("attempt", 1)
+    cps = checkpoints(t["id"])
+    req = restart_request(hist)
+    if req:
+        attempt -= 1 + sum(1 for e in hist if e["type"] == "task.restarted" and e["position"] < req["position"])
+        at = ts(req["recorded_at"]) or 0
+        cps = [c for c in cps if (ts(c.get("at")) or 0) > at]
+    return attempt - len(cps)
+
+
 def verdict_is_recent(t: dict, now: float, every: int) -> bool:
     """A worker that waited in its own session for its review (worker contract, "Lifecycle" 6; R5) was quiet on
     the record by design while the reviewer worked: after a verdict it hasn't acted on yet, its silence counts
@@ -651,11 +680,24 @@ def supervise(t: dict, now: float, dry: bool) -> None:
     last = ts((t.get("last_activity") or {}).get("at")) or ts(t.get("assigned_at")) or now
     pid_start = (ROUTE / task / f"worker.{n}.pid").stat().st_mtime
     since = max(last, pid_start)
-    attempt = ext.get("attempt", 1)
+    hist = json.loads(hive("task", task))["events"]
+    req = restart_request(hist)
+    if req and not any(e["type"] == "task.restarted" and e["position"] > req["position"] for e in hist):
+        if alive(pid):
+            if not dry:
+                cf = ROUTE / task / f"worker.{n}.container"
+                stop(pid, cf.read_text().strip() if cf.exists() else None)
+                time.sleep(5)
+            cls = "interrupted"
+        else:
+            cls = "failed_check" if review_sent_back(t, hist) else failure_class(task, "worker", n)
+        note = req["data"]["resolution"][len(RESTART_PREFIX):].strip()
+        restart(t, hist, "the operator asked for a fresh attempt" + (f": {note}" if note else ""), cls, dry)
+        return
+    used = attempts_used(t, hist)
     if not alive(pid):
         if now - pid_start < 120:
             return
-        hist = json.loads(hive("task", task))["events"]
         sent_back = review_sent_back(t, hist)
         if not sent_back:
             cp = take_checkpoint(t, n, pid_start, hist, dry)
@@ -664,9 +706,10 @@ def supervise(t: dict, now: float, dry: bool) -> None:
                         "checkpoint", dry)
                 return
         # Checkpoints are not failed attempts.
-        if attempt - len(checkpoints(task)) >= MAX_ATTEMPTS:
+        if used >= MAX_ATTEMPTS:
             emit("task.escalated", task, {"to": "operator", "code": "repeated_failure",
-                                          "reason": f"{attempt} attempts; the last worker process ended without a result"}, dry=dry)
+                                          "reason": f"{used} attempts; the last worker process ended without a "
+                                                    f"result. A fresh attempt: op restart {task} [note]"[:500]}, dry=dry)
             return
         cls = failure_class(task, "worker", n)
         why = ("the worker hit a usage or quota limit" if cls == "capacity"
@@ -681,17 +724,15 @@ def supervise(t: dict, now: float, dry: bool) -> None:
         return
     nudges = ext.get("nudges_since_activity", 0)
     if nudges < MAX_NUDGES:
-        hist = json.loads(hive("task", task))["events"]
         last_nudge = max((ts(e["recorded_at"]) for e in hist if e["type"] == "task.nudged"), default=0)
         if now - last_nudge > every:
             emit("task.nudged", task, {"reason": f"no activity for {int((now - since) / 60)} min "
                                                  f"(check-in every {every // 60} min); worker process alive"}, dry=dry)
         return
-    if attempt - len(checkpoints(task)) >= MAX_ATTEMPTS:
+    if used >= MAX_ATTEMPTS:
         emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck",
-                                      "reason": f"silent after {nudges} nudges and {attempt} attempts"}, dry=dry)
+                                      "reason": f"silent after {nudges} nudges and {used} attempts"}, dry=dry)
         return
-    hist = json.loads(hive("task", task))["events"]
     if not dry:
         cf = ROUTE / task / f"worker.{n}.container"
         stop(pid, cf.read_text().strip() if cf.exists() else None)
