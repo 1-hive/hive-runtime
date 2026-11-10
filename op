@@ -16,6 +16,7 @@
 #                               verdict, for a second opinion); default: the first of HIVE_REVIEWERS that isn't its author
 #   op restart <task> [note]    a fresh attempt for a task escalated to you (e.g. repeated_failure): resolves the
 #                               escalation; the supervisor restarts the worker with the note, and counts attempts anew
+#   op skills                   the hive's registered skills (One Hive R4) and any drift in the open task folders
 set -euo pipefail
 export HIVE_URL=${HIVE_URL:-http://127.0.0.1:8470} HIVE_ID=${HIVE_ID:-1-hive}
 export HIVE_KEY_FILE=${HIVE_KEY_FILE:-${HIVE_CONFIG_DIR:-$HOME/.config/hive}/operator.key} HIVE_VIA=${HIVE_VIA:-op}
@@ -92,6 +93,14 @@ if not esc:
                  --data "$(json resolution "$(printf 'Restart: %s' "$note" | cut -c1-500)")" 2>&1) \
              && python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); print("ok: escalation resolved on", e["task"], "at position", e["position"], "(the supervisor restarts the worker within a minute or two)")' <<<"$out" \
              || { echo "refused: $out" >&2; exit 1; } ;;
+  skills)  REG=${HIVE_SKILLS_REGISTRY:-${HIVE_DEPLOY_DIR:-$HOME/repos/1-hive/deploy}/skills.json}
+           hive-skill --registry "$REG" list
+           for d in "${HIVE_WORK_DIR:-$HOME/work/1hive}"/*/.agents/skills; do
+             [ -f "$d/.hive-skills.lock" ] || continue
+             out=$(hive-skill --registry "$REG" --json check "$d") && continue
+             t=${d%/.agents/skills}
+             python3 -c 'import json,sys; r=json.loads(sys.argv[2]); print("drift in", sys.argv[1] + ":", ", ".join(s["name"] + " " + s["status"] for s in r.get("skills", []) if s["status"] != "ok") or r)' "${t##*/}" "$out"
+           done ;;
   events)  "$HIVE" events 2>/dev/null | tail -n "${1:-20}" | python3 -c '
 import json, sys
 for l in sys.stdin:

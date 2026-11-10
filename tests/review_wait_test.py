@@ -9,7 +9,7 @@ HERE = Path(__file__).resolve().parents[1]
 T = Path(tempfile.mkdtemp())
 DIR, BIN = T / "task", T / "bin"
 DIR.mkdir(); BIN.mkdir()
-shutil.copy(HERE / "review-wait.py", DIR / "review-wait.py")
+shutil.copy(HERE / "skills/hive-worker/scripts/review-wait.py", DIR / "review-wait.py")
 STATE = T / "task.json"
 (BIN / "hive").write_text(f"#!/bin/sh\n[ \"$1\" = task ] && exec cat {STATE}\nexit 1\n")
 (BIN / "hive").chmod(0o755)

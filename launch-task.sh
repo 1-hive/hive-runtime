@@ -12,6 +12,7 @@
 #           Re-running for an existing folder relaunches in it (a restart, same base).
 # reviewer: in ~/work/1hive/<task-id>-review, mtg-player on hive/<task-id>. The reviewer
 #           reviews base..code from the result's pins (result-refs.sh), not the branch.
+# Both get the hive's registered skills for their role (load-skills.sh, One Hive R4) once the route is known.
 #
 # The kickoff file may use {DIR} for the task folder; it is copied to KICKOFF.md.
 #
@@ -120,9 +121,6 @@ for name in ["workspace", *sys.argv[3:]]:
 json.dump(reg, open(f"{d}/registry.json", "w"), indent=2)
 EOF
 fi
-cp "$RUNTIME_DIR/docs/worker-contract.md" "$DIR/WORKER-CONTRACT.md"
-cp "$RUNTIME_DIR/result-refs.sh" "$DIR/result-refs.sh"
-cp "$RUNTIME_DIR/review-wait.py" "$DIR/review-wait.py"   # a worker waits for its review in its own session (R5)
 sed "s#{DIR}#$DIR#g" "$KICKOFF" > "$DIR/KICKOFF.md"
 git -C "$DIR/workspace" pull -q --ff-only || true
 cd "$DIR"
@@ -290,6 +288,14 @@ HARNESS=$(jq -r .harness <<<"$DEC") MODEL=$(jq -r .model <<<"$DEC") EFFORT=$(jq 
 echo "route: $(jq -r '"\(.route_id) (\(.model)\(if .effort then ", " + .effort else "" end)), tier \(.tier), mode \(.mode)"' <<<"$DEC")"
 jq -c '{attempt, route_id, tier, pool}' <<<"$DEC" >> "$HIST"
 
+# ---- skills (One Hive R4): the hive's registered skills for this role and harness ---------------------------
+# Loaded into the folder on every attempt, so a restart gets the version registered now (hive-skills). The worker
+# contract and its scripts are the hive-worker skill; WORKER-CONTRACT.md, review-wait.py and result-refs.sh in the
+# folder point into it. Kept with the attempt ($RS/<role>.<n>.skills.json). A refusal stops the launch.
+SKILLS=$(HIVE_SKILLS_REGISTRY=${HIVE_SKILLS_REGISTRY:-$HIVE_DEPLOY_DIR/skills.json} \
+         "$RUNTIME_DIR/load-skills.sh" "$DIR" "$ROLE" "$HARNESS") || { echo "skills refused; not launching" >&2; exit 3; }
+echo "skills: $(jq -r '[.skills[].name] | join(", ")' <<<"$SKILLS")$(jq -r 'if .set_digest then " (set " + .set_digest[7:19] + ")" else " (unregistered)" end' <<<"$SKILLS")"
+
 # The record's SPEC §6.2: an actor re-declares when its configuration changes. When the
 # router picks a different harness or model than the actor's current declaration, or the attempt
 # runs in a different sandbox, the launcher re-declares it, signed with the actor's own key,
@@ -333,6 +339,7 @@ case "$ROLE:$HARNESS" in
   *)                  OUT=$DIR/$PREFIX-$n.log ;;
 esac
 printf '%s' "$DEC" | hr manifest - --cwd "$DIR" --output "$OUT" > "$RS/$PREFIX.$n.attempt.json"
+printf '%s\n' "$SKILLS" > "$RS/$PREFIX.$n.skills.json"
 
 # Subagents (hive-route §4.9): cheaper routes in the same pool the worker may hand subtasks to.
 # One Claude Code agent file each, written fresh for every attempt (the route's may change).

@@ -35,7 +35,17 @@ SLICE = int(os.environ.get("REVIEW_WAIT_SLICE", 540))
 WAIT_MAX = int(os.environ.get("REVIEW_WAIT_MAX", 6000))
 FIXES = int(os.environ.get("REVIEW_FIXES_IN_SESSION", 2))
 POLL = int(os.environ.get("REVIEW_WAIT_POLL", 20))
-DIR = Path(__file__).resolve().parent
+
+
+def task_dir() -> Path:
+    """The task folder: the nearest folder above this script holding hive.env. The script runs from the hive-worker
+    skill (R4), through the task folder's review-wait.py link or from the skill itself; resolving the link would put
+    its mark files inside the skill, which the drift check would then report as changed."""
+    here = Path(__file__).absolute().parent
+    return next((p for p in (here, *here.parents) if (p / "hive.env").is_file()), here)
+
+
+DIR = task_dir()
 
 
 def task(tid: str) -> dict:
