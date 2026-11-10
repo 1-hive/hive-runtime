@@ -399,7 +399,11 @@ def main():
         fake.write_text("import sys, pathlib; k = open(sys.argv[1]).read()\nprint('Reviewed:', k.splitlines()[0])\n"
                         f"'tests are not needed' in k and 'Which line?' in k and pathlib.Path({str(tmp / 'qa-seen')!r}).write_text('y')\n"
                         f"'Set up a venv with uv.' in k and pathlib.Path({str(tmp / 'notes-seen')!r}).write_text('y')\n"
-                        "print('base..code named:', 'base ' in k)\nprint('VERDICT: passed')\n")
+                        "print('base..code named:', 'base ' in k)\n"
+                        # a real review's length: the runner takes a verdict with under 400 characters of review
+                        # before it as no verdict (v0.5.48, thin_review)
+                        "print('Checked: ' + ' '.join(f'finding {i} re-run at the code pin and confirmed;' for i in range(20)))\n"
+                        "print('VERDICT: passed')\n")
         rconf = {**conf("rv1-runner-" + "x", {}), "actor": "rv1", "key_file": str(tmp / "rv1.key"),
                  "root": str(tmp / "rv1-runner"), "review_cmd": [sys.executable, str(fake), "{kickoff}"],
                  "review_notes": "Set up a venv with uv.",
