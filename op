@@ -14,8 +14,11 @@
 #   op add-key <public-key>     add a key to the operator (e.g. the Telegram bridge's)
 #   op review <task> [reviewer] ask for an independent review of the task's current result (again, after a
 #                               verdict, for a second opinion); default: the first of HIVE_REVIEWERS that isn't its author
-#   op restart <task> [note]    a fresh attempt for a task escalated to you (e.g. repeated_failure): resolves the
-#                               escalation; the supervisor restarts the worker with the note, and counts attempts anew
+#   op restart <task> [note]    a fresh attempt: the supervisor stops the worker if it runs and restarts it with the
+#                               note, and counts attempts anew. On a task escalated to you (e.g. repeated_failure)
+#                               it resolves the escalation; on a running one (e.g. to move it to the model a new
+#                               route override names) it asks the supervisor directly. The record says the operator
+#                               asked for it.
 #   op skills                   the hive's registered skills (One Hive R4) and any drift in the open task folders
 set -euo pipefail
 export HIVE_URL=${HIVE_URL:-http://127.0.0.1:8470} HIVE_ID=${HIVE_ID:-1-hive}
@@ -80,15 +83,23 @@ print(cur["event_id"])' "${2:-}") || exit 1
              && python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); print("ok: review.assigned", e["task"], "->", e["data"]["reviewer"], "at position", e["position"], "(the dispatcher launches it)")' <<<"$out" \
              || { echo "refused: $out" >&2; exit 1; } ;;
   restart) need "restart <task> [note]" "${1:-}"
-           "$HIVE" task "$1" | python3 -c '
+           esc=$("$HIVE" task "$1" | python3 -c '
 import json, sys
 t = json.load(sys.stdin)["task"]
 tid, st, esc = t["id"], t["status"], (t.get("ext") or {}).get("escalation")
 if st not in ("assigned", "in_progress"):
     sys.exit(f"{tid} is {st}: only a task a worker holds (assigned or in progress) can be restarted")
-if not esc:
-    sys.exit(f"{tid} has no open escalation: the supervisor restarts it on its own when its worker ends")' || exit 1
-           note=${2:-}
+print("yes" if esc else "no")') || exit 1
+           note=$(printf '%s' "${2:-}" | cut -c1-500)
+           if [ "$esc" = no ]; then   # nothing to resolve: ask the supervisor directly (supervisor.py RESTART_FILE)
+             rd=${HIVE_WORK_DIR:-$HOME/work/1hive}/.route/$1
+             ls "$rd"/worker.*.pid >/dev/null 2>&1 \
+               || { echo "$1 has no worker attempt on this host: nothing to restart" >&2; exit 1; }
+             json note "$note" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); d["at"]=time.time(); d["by"]="operator"; print(json.dumps(d))' \
+               > "$rd/restart-request.json.tmp" && mv "$rd/restart-request.json.tmp" "$rd/restart-request.json"
+             echo "ok: restart requested for $1 (the supervisor stops its worker and starts a fresh attempt within a minute or two; the record says the operator asked for it)"
+             exit 0
+           fi
            out=$("$HIVE" emit task.escalation_resolved --task "$1" \
                  --data "$(json resolution "$(printf 'Restart: %s' "$note" | cut -c1-500)")" 2>&1) \
              && python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); print("ok: escalation resolved on", e["task"], "at position", e["position"], "(the supervisor restarts the worker within a minute or two)")' <<<"$out" \

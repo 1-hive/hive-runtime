@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`op restart <task> [note]`: the operator's fresh attempt for an escalated task. The operator resolves the
+"""`op restart <task> [note]`: the operator's fresh attempt, for an escalated task or a running one. The operator resolves the
 escalation with "Restart: <note>"; the supervisor restarts the worker (stopping it first if it still runs), once,
 and counts attempts again from that restart. A chief of staff's resolution with the same words doesn't count.
 Before this a task escalated as repeated_failure had no way back: resolving it got it escalated again at once."""
@@ -94,6 +94,35 @@ HIST[:] = BEFORE + [REQ] + [ev(11 + i, "task.restarted", 30 - i) for i in range(
 assert sup.attempts_used(t8, HIST) == 3
 HIST[:] = BEFORE
 assert sup.attempts_used(t, HIST) == 2, "no request: attempt minus every checkpoint, as before"
+(sup.ROUTE / TASK / "checkpoints.jsonl").unlink()
+
+# A request without an escalation (op restart on a running task, e.g. after a new route override): the worker is
+# stopped and restarted once, and the record says the operator asked; the request is used up.
+REQF = sup.ROUTE / TASK / sup.RESTART_FILE
+t1 = {**t, "latest_review": None, "ext": {**t["ext"], "attempt": 1}}
+HIST[:] = [ev(1, "task.assigned", 9000)]
+ALIVE[0] = True; stopped.clear(); restarts.clear()
+REQF.write_text(json.dumps({"at": NOW - 30, "note": "on Opus now", "by": "operator"}))
+assert sup.host_restart_request(TASK)["note"] == "on Opus now"
+sup.supervise(t1, NOW, dry=False)
+assert stopped == [999999] and restarts == [("the operator asked for a fresh attempt: on Opus now", "interrupted")], \
+    (stopped, restarts)
+assert not REQF.exists() and not emitted
+restarts.clear(); stopped.clear()
+# Its restart starts the count again, as an op restart after an escalation does.
+HIST[:] = [ev(1, "task.assigned", 9000), ev(2, "task.restarted", 8000, reason="the worker's process ended"),
+           ev(3, "task.restarted", 20, reason="the operator asked for a fresh attempt: on Opus now")]
+assert sup.attempts_used({**t, "ext": {**t["ext"], "attempt": 3}}, HIST) == 1
+# A request older than the attempt that runs now is stale: dropped, nothing stopped.
+REQF.write_text(json.dumps({"at": NOW - 7200, "note": ""}))
+sup.supervise(t1, NOW, dry=False)
+assert not REQF.exists() and not stopped and not restarts, (stopped, restarts)
+# A worker that ended on its own: the reason says how it ended, not only that it posted no result.
+ALIVE[0] = False
+HIST[:] = [ev(1, "task.assigned", 9000)]
+sup.supervise(t1, NOW, dry=False)
+assert len(restarts) == 1 and restarts[0][0].startswith("the worker's process ended without posting a result: "), restarts
+restarts.clear()
 
 # --- op itself, against a stand-in hive -------------------------------------------------------------------------
 import subprocess
@@ -117,7 +146,17 @@ assert json.loads(a[a.index("--data") + 1]) == {"resolution": 'Restart: fix "fin
 ARGS.unlink()
 r = OP("restart", "t1")
 assert r.returncode == 0 and json.loads(ARGS.read_text().splitlines()[-1]) == {"resolution": "Restart: "}, r
-for task, why in (({"id": "t1", "status": "in_progress", "ext": {"escalation": None}}, "no open escalation"),
+# No open escalation: the request goes to the supervisor (supervisor.RESTART_FILE), nothing to the record.
+STATE.write_text(json.dumps({"task": {"id": "t1", "status": "in_progress", "ext": {"escalation": None}}}))
+ARGS.unlink(missing_ok=True)
+r = OP("restart", "t1", "move to Opus")
+assert r.returncode == 0 and "restart requested" in r.stdout and not ARGS.exists(), r
+d = json.loads(REQF.read_text())
+assert d["note"] == "move to Opus" and d["by"] == "operator" and abs(d["at"] - time.time()) < 60, d
+REQF.unlink()
+for p_ in (sup.ROUTE / TASK).glob("worker.*.pid"):
+    p_.unlink()
+for task, why in (({"id": "t1", "status": "in_progress", "ext": {"escalation": None}}, "no worker attempt"),
                   ({"id": "t1", "status": "blocked", "ext": {"escalation": ESC}}, "is blocked")):
     STATE.write_text(json.dumps({"task": task}))
     r = OP("restart", "t1")

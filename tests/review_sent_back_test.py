@@ -54,5 +54,5 @@ assert restarts[-1][0] == "failed_check" and not checkpoints_taken, (restarts, c
 HIST[:] = REVIEW + [ev(1431, "task.restarted"), ev(1434, "task.reported")]
 sup.supervise(task, NOW, dry=False)
 assert checkpoints_taken == [1], "the attempt after the restart is checked for a checkpoint"
-assert restarts[-1] == ("outage", "the worker's process ended without posting a result"), restarts[-1]
+assert restarts[-1][0] == "outage" and restarts[-1][1].startswith("the worker's process ended without posting a result: "), restarts[-1]
 print("PASSED")

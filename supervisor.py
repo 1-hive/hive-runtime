@@ -13,6 +13,10 @@ for each task a worker holds, applies the ladder:
    unless the operator asks for a fresh attempt (`op restart <task> [note]`: the escalation
    resolved with "Restart: <note>", signed by the operator). Then it restarts the worker (stopping
    it first if it is still running), and the attempts count again from that restart.
+   The operator can also ask for one on a task that isn't escalated, e.g. to move it to another model
+   after changing route-overrides.json: `op restart` leaves .route/<task>/restart-request.json. Either
+   way the record's task.restarted says "the operator asked for a fresh attempt", never that the
+   worker ended without a result; a worker that did end on its own gets why (end_reason) in its reason.
 4. A reviewer's process ended without a verdict       -> task.escalated to the chief
    of staff (`other`), with why it ended (end_reason: stopped from outside, killed, lost its
    connection, the 90-minute limit, or unknown, and how long it ran); unless it hit a usage or quota limit: then the dispatcher relaunches
@@ -71,6 +75,8 @@ ENV = {**hp.tool_env(hp.CONFIG_DIR / "agents" / "supervisor.key", "supervisor"),
 GRACE = 600          # seconds past the check-in interval before acting
 MAX_ATTEMPTS = 4     # attempt 1 + 3 restarts, then escalate
 RESTART_PREFIX = "Restart:"   # op restart: the operator's resolution that asks for a fresh attempt
+OPERATOR_RESTART = "the operator asked for a fresh attempt"   # task.restarted reason for either kind of request
+RESTART_FILE = "restart-request.json"   # op restart on a task with no open escalation: {"at": epoch, "note"}
 MAX_NUDGES = 2
 MAX_CHECKPOINTS = 3  # routing checkpoints per task
 # Long-lived agents (HIVE_LONG_LIVED_ACTORS: comma-separated actor-id patterns, e.g. "worker.*,reviewer.astra"):
@@ -474,15 +480,38 @@ def restart_request(hist: list[dict]) -> dict | None:
                  and str((e.get("data") or {}).get("resolution", "")).startswith(RESTART_PREFIX)), None)
 
 
+def host_restart_request(task: str) -> dict | None:
+    """The operator's request for a fresh attempt on a task with no open escalation (`op restart` writes it:
+    the record has no operator event for that). Without it, the only way to move a running task to another
+    model was to stop its container by hand, and the record then said its worker ended without a result
+    (1-hive tune-1, 2026-11-11, moved to Opus after the operator set a goal override)."""
+    try:
+        req = json.loads((ROUTE / task / RESTART_FILE).read_text())
+        return req if isinstance(req, dict) and isinstance(req.get("at"), (int, float)) else None
+    except (OSError, ValueError):
+        return None
+
+
+def operator_restart(hist: list[dict]) -> dict | None:
+    """The task.restarted that began the operator's latest fresh attempt: the first after an `op restart`
+    resolution, or one whose reason says so (a request without an escalation leaves only that)."""
+    req = restart_request(hist)
+    restarts = [e for e in hist if e["type"] == "task.restarted"]
+    marks = [e for e in restarts if str((e.get("data") or {}).get("reason", "")).startswith(OPERATOR_RESTART)]
+    if req:
+        marks += [e for e in restarts if e["position"] > req["position"]][:1]
+    return max(marks, key=lambda e: e["position"], default=None)
+
+
 def attempts_used(t: dict, hist: list[dict]) -> int:
     """The attempts that count against MAX_ATTEMPTS. Routing checkpoints don't count; after the operator's
     fresh attempt (`op restart`) the count starts again: that restart is attempt 1."""
     attempt = (t.get("ext") or {}).get("attempt", 1)
     cps = checkpoints(t["id"])
-    req = restart_request(hist)
-    if req:
-        attempt -= 1 + sum(1 for e in hist if e["type"] == "task.restarted" and e["position"] < req["position"])
-        at = ts(req["recorded_at"]) or 0
+    mark = operator_restart(hist)
+    if mark:
+        attempt -= 1 + sum(1 for e in hist if e["type"] == "task.restarted" and e["position"] < mark["position"])
+        at = ts(mark["recorded_at"]) or 0
         cps = [c for c in cps if (ts(c.get("at")) or 0) > at]
     return attempt - len(cps)
 
@@ -682,7 +711,13 @@ def supervise(t: dict, now: float, dry: bool) -> None:
     since = max(last, pid_start)
     hist = json.loads(hive("task", task))["events"]
     req = restart_request(hist)
-    if req and not any(e["type"] == "task.restarted" and e["position"] > req["position"] for e in hist):
+    if req and any(e["type"] == "task.restarted" and e["position"] > req["position"] for e in hist):
+        req = None   # already acted on
+    hreq = host_restart_request(task)
+    if hreq and hreq["at"] <= pid_start:   # asked before this attempt began: an attempt has started since
+        (ROUTE / task / RESTART_FILE).unlink(missing_ok=True)
+        hreq = None
+    if req or hreq:
         if alive(pid):
             if not dry:
                 cf = ROUTE / task / f"worker.{n}.container"
@@ -691,8 +726,10 @@ def supervise(t: dict, now: float, dry: bool) -> None:
             cls = "interrupted"
         else:
             cls = "failed_check" if review_sent_back(t, hist) else failure_class(task, "worker", n)
-        note = req["data"]["resolution"][len(RESTART_PREFIX):].strip()
-        restart(t, hist, "the operator asked for a fresh attempt" + (f": {note}" if note else ""), cls, dry)
+        note = (req["data"]["resolution"][len(RESTART_PREFIX):] if req else str(hreq.get("note") or "")).strip()
+        restart(t, hist, OPERATOR_RESTART + (f": {note}" if note else ""), cls, dry)
+        if hreq and not dry:
+            (ROUTE / task / RESTART_FILE).unlink(missing_ok=True)
         return
     used = attempts_used(t, hist)
     if not alive(pid):
@@ -713,7 +750,7 @@ def supervise(t: dict, now: float, dry: bool) -> None:
             return
         cls = failure_class(task, "worker", n)
         why = ("the worker hit a usage or quota limit" if cls == "capacity"
-               else "the worker's process ended without posting a result")
+               else f"the worker's process ended without posting a result: {end_reason(task, 'worker', n)}")
         if sent_back:
             cls, why = "failed_check", "the independent review sent the result back"
         restart(t, hist, why, cls, dry)
