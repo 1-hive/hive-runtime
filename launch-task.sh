@@ -40,9 +40,10 @@
 #   ROUTE_OVERRIDE    JSON {"route_id": ..., "reason": ..., "by": "operator"}: an operator's
 #                     explicit choice (RT1), e.g. a same-family review when no other family has
 #                     capacity. Only on the operator's instruction; the reason says which.
-#                     Without it, a worker takes the operator's standing override for its task or goal
-#                     from ~/.config/hive/route-overrides.json, if any:
-#                     {"tasks": {"<task>": {route_id, reason, by}}, "goals": {"<goal>": {...}}}.
+#                     Without it, a worker takes the operator's standing override for its task, goal or
+#                     project (the most specific first) from ~/.config/hive/route-overrides.json, if any:
+#                     {"tasks": {"<task>": {route_id, reason, by}}, "goals": {"<goal>": {...}},
+#                      "projects": {"<project>": {...}}}.
 #                     Reviews never do: RT4 (another family) stays theirs. A `reviews` entry there
 #                     ({route_id, reason, by}) is the fallback when the router can't route a review now.
 # Claude Code runs in print mode with auto permissions; Codex runs `exec`.
@@ -163,8 +164,10 @@ HISTORY=$(jq -s -c '[.[] | select(.class) | {attempt, route_id, tier, pool, clas
 
 OVR=$HIVE_CONFIG_DIR/route-overrides.json
 if [ -z "${ROUTE_OVERRIDE:-}" ] && [ "$ROLE" = worker ] && [ -s "$OVR" ]; then
-  GOAL=$(HIVE_URL=$HIVE_URL HIVE_ID=$HIVE_ID HIVE_KEY_FILE=$KEY hive task "$TASK" 2>/dev/null | jq -r '.task.goal // empty')
-  ROUTE_OVERRIDE=$(jq -c --arg t "$TASK" --arg g "$GOAL" '.tasks[$t] // .goals[$g] // empty' "$OVR")
+  TJ=$(HIVE_URL=$HIVE_URL HIVE_ID=$HIVE_ID HIVE_KEY_FILE=$KEY hive task "$TASK" 2>/dev/null)
+  GOAL=$(jq -r '.task.goal // empty' <<<"$TJ") PROJ=$(jq -r '.task.project // empty' <<<"$TJ")
+  ROUTE_OVERRIDE=$(jq -c --arg t "$TASK" --arg g "$GOAL" --arg p "$PROJ" \
+    '.tasks[$t] // .goals[$g] // .projects[$p] // empty' "$OVR")
   [ -z "$ROUTE_OVERRIDE" ] || echo "operator override: $ROUTE_OVERRIDE"
 fi
 

@@ -76,6 +76,7 @@ GRACE = 600          # seconds past the check-in interval before acting
 MAX_ATTEMPTS = 4     # attempt 1 + 3 restarts, then escalate
 RESTART_PREFIX = "Restart:"   # op restart: the operator's resolution that asks for a fresh attempt
 OPERATOR_RESTART = "the operator asked for a fresh attempt"   # task.restarted reason for either kind of request
+REASON_MAX = 500   # the record's maxLength for an event's reason
 RESTART_FILE = "restart-request.json"   # op restart on a task with no open escalation: {"at": epoch, "note"}
 MAX_NUDGES = 2
 MAX_CHECKPOINTS = 3  # routing checkpoints per task
@@ -582,7 +583,10 @@ Then: `source {{DIR}}/hive.env`, pull the workspace, post a checkpoint that says
     pin = HOME / f"{task}-restart-{attempt + 1}.pin"
     subprocess.run(["hive-pin", "mint", "workspace", rel, "--output", str(pin)], check=True,
                    capture_output=True, env=ENV)
-    emit("task.restarted", task, {"reason": reason}, [f"context={pin}"])
+    # The record caps a reason at 500 characters; the context above keeps all of it. Unclipped, a long
+    # `op restart` note (op allows 500, the prefix adds 40) was refused on every tick, its worker already
+    # stopped (1-hive value-1, 2026-11-11).
+    emit("task.restarted", task, {"reason": reason[:REASON_MAX]}, [f"context={pin}"])
     env = {**os.environ, "ROUTE_LAST_CLASS": cls, **route_env(task)}
     r = subprocess.run([str(LAUNCH), "worker", task, t["owner"], str(path)], capture_output=True, text=True, env=env)
     log(f"relaunch {task}: rc={r.returncode} {r.stdout.strip()} {r.stderr.strip()[-300:]}")
