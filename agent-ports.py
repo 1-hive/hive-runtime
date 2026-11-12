@@ -3,12 +3,14 @@
 
 Agent containers have no route to the host's loopback (slirp4netns without
 allow_host_loopback), so the record's Postgres and every other local service stay out
-of reach. This relays three Unix sockets, which launch-task.sh mounts read-only into
+of reach. This relays four Unix sockets, which launch-task.sh mounts read-only into
 each container, to the services agents need:
 
     record.sock  -> 127.0.0.1:8470  (the record's gateway)
     gateway.sock -> 127.0.0.1:4000  (the model gateway)
     ssh.sock     -> 127.0.0.1:22    (sshd: git, as the actor's key allows)
+    kev.sock     -> 127.0.0.1:8009  (Kev, the local decision model: inference only, no
+                                     admin routes; HIVE_KEV_PORT moves it; 1-hive kev-1, 2026-11-12)
 
 Inside, the agent image's hive-entry listens on those same ports on the container's
 loopback and relays them to the sockets. Sockets are in ~/work/1hive/.ports, which
@@ -27,7 +29,8 @@ from pathlib import Path
 
 import hive_paths as hp
 
-PORTS = {"record.sock": hp.GATEWAY_PORT, "gateway.sock": 4000, "ssh.sock": 22}
+KEV_PORT = int(os.environ.get("HIVE_KEV_PORT") or 8009)
+PORTS = {"record.sock": hp.GATEWAY_PORT, "gateway.sock": 4000, "ssh.sock": 22, "kev.sock": KEV_PORT}
 
 
 async def pipe(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
