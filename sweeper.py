@@ -14,7 +14,8 @@ or <task>-review is removed when all of these hold:
 5. there is no KEEP file at its top (the operator or cos can drop one to hold a folder);
 6. nothing running uses it: no process of ours with its working directory inside, and no
    container of an agent user mounting it.
-Folders that aren't task folders (cos, canary, play, dot-folders) are never touched.
+Folders that aren't task folders (cos, canary, play, dot-folders) are never touched, except a goal's host inputs
+(~/work/1hive/.inputs/<goal>, inputs.py): removed under rules 2, 3 and 6, unless a KEEP file is at its top.
 
 Agent users own parts of their folders, some through their containers' sub-ids, so what the
 operator's user can't remove is removed by each owner in its own `podman unshare` (the sudo
@@ -171,6 +172,40 @@ def main() -> None:
                                     "goal": t["goal"], "bytes": n}) + "\n")
         else:
             log(f"{d.name}: couldn't remove everything; left for the next sweep")
+    # A goal's host inputs (inputs.py): one read-only copy for all its tasks, which goes with their folders.
+    staged = ROOT / ".inputs"
+    for d in sorted(staged.iterdir()) if staged.is_dir() else []:
+        if not d.is_dir():
+            continue
+        g = goals.get(d.name)
+        why = None
+        if not g:
+            why = "no such goal on the record"
+        elif g.get("status") not in ("accepted", "abandoned"):
+            why = f"goal {g.get('status')}"
+        elif now - ts(at[g["status_since"]]) < dt.timedelta(days=a.grace_days):
+            why = f"goal {g['status']} {ts(at[g['status_since']]):%Y-%m-%d}, in the grace period"
+        elif (d / "KEEP").exists():
+            why = "KEEP"
+        elif any(b == str(d) or b.startswith(str(d) + "/") for b in busy):
+            why = "in use"
+        if why:
+            if a.dry_run:
+                print(f"keep   .inputs/{d.name}: {why}")
+            continue
+        n = size(d)
+        if a.dry_run:
+            print(f"remove .inputs/{d.name}: {n / 1e9:.1f} GB")
+            continue
+        subprocess.run(["chmod", "-R", "u+w", str(d)], capture_output=True)   # staged read-only, folders too
+        if remove(d):
+            freed, removed = freed + n, removed + 1
+            LOG.parent.mkdir(exist_ok=True)
+            with LOG.open("a") as f:
+                f.write(json.dumps({"at": f"{now:%Y-%m-%dT%H:%M:%SZ}", "folder": f".inputs/{d.name}", "task": None,
+                                    "goal": d.name, "bytes": n}) + "\n")
+        else:
+            log(f".inputs/{d.name}: couldn't remove everything; left for the next sweep")
     if a.dry_run:
         return
     hours = f"{int(a.grace_days * 24)}h"
@@ -179,7 +214,7 @@ def main() -> None:
                     ["image", "prune", "-a", "-f", "--filter", f"until={hours}"]):
             subprocess.run(["sudo", "-n", "-u", u, AGENT_PODMAN, *cmd], capture_output=True)
     subprocess.run(["podman", "image", "prune", "-f"], capture_output=True)
-    log(f"removed {removed} task folders, {freed / 1e9:.1f} GB")
+    log(f"removed {removed} task folders and goal inputs, {freed / 1e9:.1f} GB")
 
 
 if __name__ == "__main__":

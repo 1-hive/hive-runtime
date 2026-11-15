@@ -5,7 +5,8 @@
 #   op inbox                    what needs you
 #   op board                    goals and open tasks
 #   op goal <id>                a goal and its history
-#   op approve <goal>           approve a proposed goal
+#   op approve <goal>           approve a proposed goal; prints the host inputs it grants the goal's tasks
+#   op inputs <goal>            the host files a goal's tasks may read (inputs.py): as approved, and any revision since
 #   op accept <goal> [note]     accept a completed goal
 #   op reopen <goal> <reason>   send a completed goal back
 #   op abandon <goal> <reason>  abandon a goal
@@ -42,7 +43,10 @@ case "$cmd" in
   cos)     exec "$(dirname "$(readlink -f "$0")")/cos.sh" attach ;;
   board)   "$HIVE" board ;;
   goal)    need "goal <id>" "${1:-}"; "$HIVE" goal "$1" ;;
-  approve) need "approve <goal>" "${1:-}"; emit goal.approved "$1" ;;
+  approve) need "approve <goal>" "${1:-}"; emit goal.approved "$1"
+           python3 "$(dirname "$(readlink -f "$0")")/inputs.py" show "$1" --key "$HIVE_KEY_FILE" || true ;;
+  inputs)  need "inputs <goal>" "${1:-}"
+           exec python3 "$(dirname "$(readlink -f "$0")")/inputs.py" show "$1" --key "$HIVE_KEY_FILE" ;;
   accept)  need "accept <goal> [note]" "${1:-}"
            if [ -n "${2:-}" ]; then emit goal.accepted "$1" "$(json note "$2")"; else emit goal.accepted "$1"; fi ;;
   reopen)  need "reopen <goal> <reason>" "${2:-}"; emit goal.reopened "$1" "$(json reason "$2")" ;;

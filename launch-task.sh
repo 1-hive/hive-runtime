@@ -12,7 +12,8 @@
 #           Re-running for an existing folder relaunches in it (a restart, same base).
 # reviewer: in ~/work/1hive/<task-id>-review, mtg-player on hive/<task-id>. The reviewer
 #           reviews base..code from the result's pins (result-refs.sh), not the branch.
-# Both get the hive's registered skills for their role (load-skills.sh, One Hive R4) once the route is known.
+# Both get the hive's registered skills for their role (load-skills.sh, One Hive R4) once the route is known,
+# and the host inputs the operator granted the task's goal by approving it, read-only (inputs.py).
 #
 # The kickoff file may use {DIR} for the task folder; it is copied to KICKOFF.md.
 #
@@ -125,6 +126,18 @@ fi
 sed "s#{DIR}#$DIR#g" "$KICKOFF" > "$DIR/KICKOFF.md"
 git -C "$DIR/workspace" pull -q --ff-only || true
 cd "$DIR"
+
+# ---- host inputs: host files the operator granted the task's goal by approving it (inputs.py) -------------------
+# One read-only copy per goal, the same for its workers and reviewers: linked as host-inputs, described at the end of
+# KICKOFF.md, mounted read-only into the container below. Inputs that can't be granted stop the launch, with why.
+INPUTS=$(python3 "$RUNTIME_DIR/inputs.py" stage "$TASK" --key "$KEY" --task-dir "$DIR") \
+  || { echo "host inputs: not launching" >&2; exit 2; }
+IDIR=$(jq -r '.dir // empty' <<<"$INPUTS")
+IMNT=()
+if [ -n "$IDIR" ]; then
+  IMNT=(-v "$IDIR:$IDIR:ro")
+  echo "host inputs: $(jq -r '[.inputs[].name] | join(", ")' <<<"$INPUTS") ($IDIR)"
+fi
 
 # ---- route: ask the router which harness and model run this attempt ------------------
 # Table deploy/route-table.yaml; pool usage and qualifications from deploy/route-sources.yaml.
@@ -478,7 +491,7 @@ else
        # creates), e.g. mtg-player's human-play sandbox (cp-1-quickstart).
        --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN
        --security-opt label=disable --security-opt seccomp=unconfined --security-opt 'unmask=/proc/*'
-       -v "$DIR:$DIR" -w "$DIR" "${SEC[@]}" "${CRED[@]}" "${CENV[@]}" localhost/1hive-agent:latest)
+       -v "$DIR:$DIR" "${IMNT[@]}" -w "$DIR" "${SEC[@]}" "${CRED[@]}" "${CENV[@]}" localhost/1hive-agent:latest)
   WSDIR=()
   # The supervisor stops it by name, as its user ("-" for the operator's).
   echo "$([ "${P[0]}" = sudo ] && echo "$AU" || echo -) $CNAME" > "$RS/$PREFIX.$n.container"

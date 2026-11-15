@@ -42,7 +42,17 @@ Commit and push before you refer to anything: the record holds pins, not content
    - an objective;
    - **"Doesn't count, even if every check passes, when"**: plain clauses for the ways the work could pass and still be useless;
    - success criteria;
-   - a budget.
+   - a budget;
+   - **host inputs**, if its tasks need files that only exist on the host and in no repository: a model's weights, another tool's data, a finished task's outputs. Agents see only their own task folder, so declare them here, in one block, with a path and why the goal needs it on each line (at most 8):
+
+     ````
+     ```hive-inputs
+     ~/opt/kev/runs/reader-ft-v1                              Kev's served run, for the CPU latency test
+     ~/.cache/huggingface/hub/models--Qwen--Qwen3.5-4B-Base   the base model Kev loads
+     ```
+     ````
+
+     The approval card shows them, and approving the goal grants them. Every task of the goal, and every review of those tasks, then gets the same read-only copy, made at the first launch, as `{DIR}/host-inputs/<last part of the path>` (e.g. `{DIR}/host-inputs/reader-ft-v1`); name that in the orders. A path is in the operator's home (`~/...`), names the folder the goal needs (never a whole home or `~/work`), and never holds keys or logins (`~/.ssh`, `~/.config`, `~/.claude`, the HF token...): the launcher refuses those, and refuses the launch with why. Only the version the human approved counts: inputs added by a revision after approval aren't granted. Declare everything up front; a need found later is a question with `needs: access`, as before. `op inputs <goal>` shows the operator what a goal holds.
 
    Push it, then `emit goal.proposed` with `data` `{project, title, objective (≤1000), relevance (≤300), budget}`, where `budget` holds `wall_clock_seconds` (always set one), `usd_micros` or `tokens`, and a `goal` ref to the file. Tell the human in one line what it is and why. They approve it in Telegram or with `op`; the bridge then messages you in chat that it was approved, and you start it.
 2. Once it is `active`, write one order per task, `orders/<date>-<task>.md`:
