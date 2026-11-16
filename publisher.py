@@ -29,7 +29,10 @@ With --github-token FILE (a token that may open pull requests on the homes, e.g.
 it also opens the pull request itself: into the branch holding the result's base, titled with the task's title, the
 body the report's "## Summary" section and where the report and review are. The message then gives the PR's link;
 a PR already open for that branch is reused. Without a token, or when GitHub refuses, it gives the compare link as
-before. Merging stays with a human.
+before. Merging stays with a human: the message carries a 🔀 Merge button (HIVE_PR and HIVE_PR_SHA go to --say), and an
+operator's tap runs `publisher.py --merge-pr URL --sha SHA` (as root, for the token: proto-hive's deploy/merge-pr), which
+merges only a hive/* pull request into a home in the registry, with a merge commit, and only while its head is still
+the reviewed commit.
 
 Superseded pull requests: after opening one, it closes every other open hive/* pull request on that home whose
 head commit is already in the new one's history (a later task built on it, so merging the new one merges it too),
@@ -238,6 +241,57 @@ def open_pr(token: str, home: str, head: str, base: str | None, title: str, body
         return None, f"{type(e).__name__}: {e}"
 
 
+PR_URL = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)$")
+
+
+def merge_pr(token: str, registry: dict, url: str, sha: str) -> dict:
+    """Merge a hive pull request on its home (an operator's 🔀 Merge tap in Telegram): only into a staged home in the
+    registry, only a hive/* branch, and only while its head is still `sha`, the reviewed commit the message named
+    (GitHub refuses the merge otherwise). A merge commit, so the reviewed commit stays in the history."""
+    m = PR_URL.match(url)
+    if not m or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return {"ok": False, "why": "not a GitHub pull request URL and a full commit"}
+    owner, name, num = m.groups()
+    homes = {re.sub(r"(\.git)?/?$", "", h).lower() for _, h in staged(registry).values()}
+    if f"https://github.com/{owner}/{name}".lower() not in homes:
+        return {"ok": False, "why": f"{owner}/{name} isn't a home of this hive's repositories"}
+    api = f"{os.environ.get('HIVE_GITHUB_API', 'https://api.github.com')}/repos/{owner}/{name}/pulls/{num}"
+    hdr = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "User-Agent": "hive-publisher"}
+
+    def call(method: str, data: dict | None = None):
+        req = urllib.request.Request(api + ("/merge" if method == "PUT" else ""), method=method, headers=hdr,
+                                     data=json.dumps(data).encode() if data else None)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.load(resp)
+    try:
+        pr = call("GET")
+        head = (pr.get("head") or {}).get("ref", "")
+        if not head.startswith("hive/"):
+            return {"ok": False, "why": f"its branch {head} isn't one the hive published"}
+        if pr.get("merged"):
+            return {"ok": False, "why": "it was already merged", "already": True}
+        if pr.get("state") != "open":
+            return {"ok": False, "why": "it was closed (e.g. a later pull request superseded it)"}
+        if (pr.get("head") or {}).get("sha") != sha:
+            return {"ok": False, "why": f"its head is now {str((pr.get('head') or {}).get('sha'))[:10]}, not the "
+                                        f"reviewed {sha[:10]}: someone pushed to it since"}
+        out = call("PUT", {"sha": sha, "merge_method": "merge",
+                           "commit_title": f"Merge pull request #{num} from {owner}/{head}"})
+        return {"ok": bool(out.get("merged")), "merged_sha": out.get("sha"), "base": (pr.get("base") or {}).get("ref"),
+                "head": head, "title": pr.get("title"), **({} if out.get("merged") else {"why": out.get("message")})}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        try:
+            msg = json.loads(body).get("message", body)
+        except ValueError:
+            msg = body
+        why = {403: "the hive's GitHub token may not merge here (it needs Contents: write)",
+               405: f"GitHub won't merge it: {msg}", 409: "its head moved since the review: not merged"}.get(e.code)
+        return {"ok": False, "why": why or f"GitHub said {e.code}: {str(msg)[:200]}"}
+    except (urllib.error.URLError, ValueError, TimeoutError) as e:
+        return {"ok": False, "why": f"{type(e).__name__}: {e}"}
+
+
 WORD = re.compile(r"[a-z0-9']+")
 NGRAM = 6
 
@@ -385,8 +439,16 @@ def main() -> None:
                     help="private text (notes, chat exports): a result for a public home sharing 6+ words with it is held")
     ap.add_argument("--init-only", action="store_true", help="create and mirror the hive copies, publish nothing")
     ap.add_argument("--dry-run", action="store_true", help="say what would be published, push nothing")
+    ap.add_argument("--merge-pr", metavar="URL", help="merge this hive pull request (with --sha and --github-token), "
+                                                      "print the outcome as JSON, and nothing else")
+    ap.add_argument("--sha", help="--merge-pr: the reviewed commit its head must still be")
     a = ap.parse_args()
     reg = json.loads(Path(a.registry).read_text())
+    if a.merge_pr:
+        token = Path(a.github_token).read_text().strip() if a.github_token and Path(a.github_token).is_file() else ""
+        out = merge_pr(token, reg, a.merge_pr, a.sha or "") if token else {"ok": False, "why": "no GitHub token"}
+        print(json.dumps(out))
+        sys.exit(0 if out["ok"] else 1)
     repos = staged(reg)
     keys = Path(a.keys) if a.keys else None
     deny = [re.compile(d) for d in a.deny]
@@ -396,13 +458,16 @@ def main() -> None:
     first = "published" not in state
     done, warned = state.setdefault("published", {}), state.setdefault("warned", {})
 
-    def alert(key: str, msg: str, task: str | None = None) -> None:
+    def alert(key: str, msg: str, task: str | None = None, pr: tuple[str, str] | None = None) -> None:
         if warned.get(key) == msg:
             return
         warned[key] = msg
         print(msg)
         if a.say:
-            env = {**os.environ, "HIVE_TASK": task} if task else None
+            # HIVE_PR and HIVE_PR_SHA: the pull request just opened and its reviewed head, so the message can carry a
+            # 🔀 Merge button (hive-bridge telegram-say.py); a tap runs this with --merge-pr.
+            env = {**os.environ, **({"HIVE_TASK": task} if task else {}),
+                   **({"HIVE_PR": pr[0], "HIVE_PR_SHA": pr[1]} if pr else {})} if task or pr else None
             subprocess.run([*shlex.split(a.say), msg], check=False, env=env)
 
     for name, (copy, home) in sorted(repos.items()):
@@ -482,7 +547,8 @@ def main() -> None:
                 note = (f" It supersedes {', '.join(closed)}: closed, branches deleted." if closed else "") + \
                        (f" (Couldn't tidy every superseded PR: {'; '.join(problems)[:300]})" if problems else "")
                 alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}){taken}. "
-                           f"Pull request into {into}, ready to review and merge (merge commit): {url}{note}", task)
+                           f"Pull request into {into}, ready to review and merge (merge commit): {url}{note}", task,
+                      (url, code) if PR_URL.match(url) else None)
             else:
                 alert(key, f"Reviewed and published: {task} → {name} {head} ({code[:10]}){taken}. "
                            f"Open the pull request: {compare_link(home, into, head)}"

@@ -23,6 +23,9 @@
 #                               route override names) it asks the supervisor directly. The record says the operator
 #                               asked for it.
 #   op skills                   the hive's registered skills (One Hive R4) and any drift in the open task folders
+#   op chat [message]           tell the chief of staff something (the arguments, or stdin) and print its reply; logged
+#                               as your words (operator_words.py), so a goal it proposes because you asked can start
+#                               without an Approve tap
 set -euo pipefail
 export HIVE_URL=${HIVE_URL:-http://127.0.0.1:8470} HIVE_ID=${HIVE_ID:-1-hive}
 export HIVE_KEY_FILE=${HIVE_KEY_FILE:-${HIVE_CONFIG_DIR:-$HOME/.config/hive}/operator.key} HIVE_VIA=${HIVE_VIA:-op}
@@ -124,6 +127,11 @@ print("yes" if esc else "no")') || exit 1
                  --data "$(json resolution "$(printf 'Restart: %s' "$note" | cut -c1-500)")" 2>&1) \
              && python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); print("ok: escalation resolved on", e["task"], "at position", e["position"], "(the supervisor restarts the worker within a minute or two)")' <<<"$out" \
              || { echo "refused: $out" >&2; exit 1; } ;;
+  chat)    if [ $# -gt 0 ]; then msg="$*"; else msg=$(cat); fi
+           [ -n "${msg//[[:space:]]/}" ] || { echo "usage: op chat <message> (or the message on stdin)" >&2; exit 2; }
+           R=$(dirname "$(readlink -f "$0")")
+           printf '%s' "$msg" | python3 "$R/operator_words.py" add --via "host session"
+           printf '%s\n' "$msg" | "$R/cos.sh" chat ;;
   skills)  REG=${HIVE_SKILLS_REGISTRY:-${HIVE_DEPLOY_DIR:-$HOME/repos/1-hive/deploy}/skills.json}
            hive-skill --registry "$REG" list
            for d in "${HIVE_WORK_DIR:-$HOME/work/1hive}"/*/.agents/skills; do
