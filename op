@@ -7,7 +7,9 @@
 #   op goal <id>                a goal and its history
 #   op approve <goal>           approve a proposed goal; prints the host inputs it grants the goal's tasks
 #   op inputs <goal>            the host files a goal's tasks may read (inputs.py): as approved, and any revision since
-#   op accept <goal> [note]     accept a completed goal
+#   op accept <goal> [note]     accept a completed goal (merges nothing: Accept + merge in Telegram, or op merge)
+#   op merge <goal> [--yes]     merge a completed or accepted goal's reviewed code into main (merge.py): shows what
+#                               would go in; --yes merges exactly that
 #   op reopen <goal> <reason>   send a completed goal back
 #   op abandon <goal> <reason>  abandon a goal
 #   op budget <goal> <hours>    wall-clock budget: <hours> from now (other limits kept); resolves an over-budget alert
@@ -49,6 +51,20 @@ case "$cmd" in
            exec python3 "$(dirname "$(readlink -f "$0")")/inputs.py" show "$1" --key "$HIVE_KEY_FILE" ;;
   accept)  need "accept <goal> [note]" "${1:-}"
            if [ -n "${2:-}" ]; then emit goal.accepted "$1" "$(json note "$2")"; else emit goal.accepted "$1"; fi ;;
+  merge)   need "merge <goal> [--yes]" "${1:-}"
+           M="$(dirname "$(readlink -f "$0")")/merge.py"
+           python3 "$M" plan "$1" --key "$HIVE_KEY_FILE"
+           if [ "${2:-}" = "--yes" ]; then
+             d=$(python3 "$M" plan "$1" --key "$HIVE_KEY_FILE" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')
+             python3 "$M" run "$1" --digest "$d" --key "$HIVE_KEY_FILE" --via "op merge" | python3 -c '
+import json, sys
+o = json.load(sys.stdin)
+if o.get("refused"): print("refused:", o["refused"]); sys.exit(1)
+for d in o["merged"]:
+    print(("merged: %s %s %s -> %s (%s)" % (d["repo"], d["branch"], d["from"][:7], d["to"][:7], ", ".join(s["label"] for s in d["steps"])))
+          if d["ok"] else "NOT merged: %s: %s" % (d["repo"], d.get("error", "")))
+sys.exit(0 if o["ok"] else 1)'
+           else echo "To merge exactly this: op merge $1 --yes"; fi ;;
   reopen)  need "reopen <goal> <reason>" "${2:-}"; emit goal.reopened "$1" "$(json reason "$2")" ;;
   abandon) need "abandon <goal> <reason>" "${2:-}"; emit goal.abandoned "$1" "$(json reason "$2")" ;;
   add-key) need "add-key <public-key>" "${1:-}"

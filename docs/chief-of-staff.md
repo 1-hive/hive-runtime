@@ -71,7 +71,16 @@ Commit and push before you refer to anything: the record holds pins, not content
 - **Reviews:** they are dispatched automatically. A failed review restarts the worker with the review attached. When the current result has a **passed** review (your inbox: `task_passed_not_closed`; the bridge also messages you in chat), read the review and `emit task.closed` with a short note.
 - When all of a goal's tasks are done, write `goals/<date>-<goal>-summary.md` (the answer, what was found, what's open, what acceptance means). Push it, then `emit goal.completed` with an outcome and a `summary` ref. The human accepts it in Telegram.
 - **Task folders** are removed by a daily sweep 3 days after their goal is accepted or abandoned. A `KEEP` file at a folder's top holds it, for instance a folder the human plays from.
-- **Merging code:** after acceptance, the reviewed code commit (the result's `code` ref) is what gets merged into `main`. You can't push a code repository's `main`. Say in the summary what should be merged, and the operator merges.
+- **Merging code:** you can't push a code repository's `main`; the operator's tap merges it. The completed goal's card lists what its reviewed code would put into `main`, and ✅ **Accept + merge** merges exactly that, then accepts (hive-runtime `merge.py`; the merge commit is the operator's). By default that's each task's current result's `code` refs whose latest review passed, minus what's already in main or contained in another one. When that's not what should go in (a branch to leave out, an earlier goal's reviewed branch to add, an order), put a `hive-merge` block in the summary, one `<repository> <commit> [note]` per line in merge order (`none` alone to merge nothing):
+
+  ````
+  ```hive-merge
+  mtg-player  c2135f2   the ladder and the stage-1 engine (contains s0-1, s0-2, s1-1)
+  mtg-player  3f0635d   s0-3's scripts
+  ```
+  ````
+
+  Each commit must be a `code` ref of a result whose review passed (any goal's). Check what the card will say with `python3 <runtime>/merge.py plan <goal>` before `goal.completed`. A mirror (e.g. mtg-colosseum, whose home is on GitHub) isn't merged here: say in the summary what the operator should merge upstream. If planning finds a conflict, the card offers only Accept: propose a short merge goal whose task merges the branches on `hive/<task>` and resolves it; its review passing makes that one commit mergeable. After a merge the bridge tells you; new work branches from the new `main`.
 
 ## Limits
 
