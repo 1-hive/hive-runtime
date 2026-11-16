@@ -18,8 +18,9 @@ What gets merged:
   a task result whose review passed: any goal's, so a summary can carry an earlier goal's script-only branches.
 - Otherwise, every task of the goal: its current result's `code` refs, if that result's latest review passed.
 - Skipped: a commit already in main; one contained in another that will be merged; a repository whose bare clone has
-  a remote `origin` (a mirror: its home is upstream, so merging is done there, e.g. a GitHub pull request); one not in
-  the registry as a local bare repository; the workspace.
+  a remote `origin` (a mirror: its home is upstream, so merging is done there, e.g. a GitHub pull request), or that is
+  a staged hive copy (the registry gives a home after it, as on proto-hive: publisher.py opens the pull request
+  there); one not in the registry as a local bare repository; the workspace.
 - Into the branch the bare repository's HEAD names (main), in order: a fast-forward when main is behind the commit,
   else a merge commit (`git merge-tree`, no worktree) by `operator` that names the goal, task, result and review.
   Either way every new non-merge commit on main is a reviewed one, so main-watch.py passes it.
@@ -169,8 +170,13 @@ def bare_clone(name: str) -> tuple[Path | None, str | None]:
         return None, "the workspace (agents push its main themselves)"
     if git(path, "rev-parse", "--is-bare-repository", check=False).stdout.strip() != "true":
         return None, f"{path} isn't a bare repository"
+    # A staged hive copy (publisher.py): a second fetch URL is its home, which gets reviewed commits as pull requests,
+    # and the copy's own branches are mirrored from there, so a merge here would never reach the home.
+    home = next((u for u in (r.get("fetch_urls") or [])[1:] if not u.startswith("file://")), None)
+    if home:   # read (is the code already in?), never written
+        return path, f"its home is {urlparse(home).netloc or home}: merge its pull request there"
     up = git(path, "config", "--get", "remote.origin.url", check=False).stdout.strip()
-    if up:   # read (is the code already in?), never written
+    if up:
         return path, f"a mirror of {urlparse(up).netloc or up}: merge upstream"
     return path, None
 

@@ -78,6 +78,17 @@ sh("git", "-C", str(mw), "checkout", "-qb", "hive/t2")
 m1 = commit(mw, "m.txt", "m\nt2\n", "t2 in the mirror")
 sh("git", "-C", str(mw), "push", "-q", "origin", "hive/t2")
 
+# A staged hive copy (proto-hive's layout): no remote; the registry names its GitHub home after it.
+sh("git", "init", "-q", "--bare", str(repos / "staged.git"))
+sw = T / "sw"
+sh("git", "clone", "-q", str(repos / "staged.git"), str(sw))
+commit(sw, "s.txt", "s\n", "staged base")
+sh("git", "-C", str(sw), "push", "-q", "origin", "main")
+st0 = sh("git", "-C", str(repos / "staged.git"), "rev-parse", "main").strip()
+sh("git", "-C", str(sw), "checkout", "-qb", "hive/t2")
+st1 = commit(sw, "s.txt", "s\nt2\n", "t2 in the staged copy")
+sh("git", "-C", str(sw), "push", "-q", "origin", "hive/t2")
+
 sh("git", "init", "-q", "--bare", str(repos / "workspace.git"))
 ww = T / "ww"
 sh("git", "clone", "-q", str(repos / "workspace.git"), str(ww))
@@ -91,6 +102,7 @@ sh("git", "-C", str(ww), "push", "-q", "origin", "main")
 (T / "deploy" / "registry.json").write_text(json.dumps({"version": 1, "repositories": {
     "proj": {"fetch_urls": [f"file://{repos / 'proj.git'}"]},
     "mirror": {"fetch_urls": [f"file://{repos / 'mirror.git'}"]},
+    "staged": {"fetch_urls": [f"file://{repos / 'staged.git'}", "https://github.com/someone/staged.git"]},
     "workspace": {"fetch_urls": [f"file://{repos / 'workspace.git'}"]},
     "gh": {"fetch_urls": ["https://github.com/1-hive/gh.git"]}}}))
 
@@ -104,7 +116,7 @@ def result(rid, task, pos, refs):
 RESULTS = {
     "r1": result("r1", "t1", 10, [("proj", a1)]),
     "r1b": result("r1b", "t1b", 11, [("proj", a2)]),
-    "r2": result("r2", "t2", 12, [("proj", b1), ("mirror", m1), ("gh", "f" * 40)]),
+    "r2": result("r2", "t2", 12, [("proj", b1), ("mirror", m1), ("staged", st1), ("gh", "f" * 40)]),
     "r3": result("r3", "t3", 13, [("proj", x1)]),
     "r4": result("r4", "t4", 14, [("proj", u1)]),
     "r5": result("r5", "t5", 15, [("mirror", m0)]),
@@ -150,10 +162,13 @@ mirror = next(r for r in p["repos"] if r["repo"] == "mirror")
 assert mirror["skipped"].startswith("a mirror of github.com") and mirror["merges"] == 0, mirror
 gh = next(r for r in p["repos"] if r["repo"] == "gh")
 assert gh["skipped"].startswith("its home is github.com") and gh["path"] is None, gh
+staged = next(r for r in p["repos"] if r["repo"] == "staged")
+assert staged["skipped"] == "its home is github.com: merge its pull request there" and staged["merges"] == 0, staged
 text = "\n".join(M.describe(p))
 assert "proj main: fast-forward to hive/t1" in text and "proj main: merge hive/t2" in text, text
 assert "mirror: not merged here (a mirror of github.com: merge upstream)" in text, text
 assert "gh: not merged here (its home is github.com: merge there)" in text, text
+assert "staged: not merged here (its home is github.com: merge its pull request there)" in text, text
 assert main_of() == c0, "planning changes nothing"
 
 # The digest names the plan: another one is refused.
@@ -180,6 +195,7 @@ log = [json.loads(x) for x in (T / "work" / ".merges.jsonl").read_text().splitli
 assert log[-1]["goal"] == "g1" and log[-1]["ok"] and log[-1]["merged"][0]["to"] == new, log
 assert M.outcome_line(o) == f"proj main {c0[:7]}→{new[:7]} (hive/t1, hive/t2)", M.outcome_line(o)
 assert main_of(repos / "mirror.git") == m0, "a mirror is never written"
+assert main_of(repos / "staged.git") == st0, "a staged copy is never written"
 
 # Again: nothing left.
 p = M.plan("g1", "k")
