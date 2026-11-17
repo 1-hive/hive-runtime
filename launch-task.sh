@@ -456,8 +456,11 @@ else
   # Clones' remotes are the bare repositories' host paths; in the container, git reaches them
   # over SSH as this actor (git/hive-git-shell, whose pre-receive hook limits its pushes).
   # The task folder's files belong to the operator's user, which the container doesn't map.
-  CENV=(-e GIT_CONFIG_COUNT=2 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@$H$HIVE_REPOS_DIR/.insteadOf"
+  # The registry's fetch URLs are file:// URLs of the same paths (hive-pin checks publication there), so
+  # they take the same route; without it every pin minted in a container failed REMOTE_UNAVAILABLE (as cos.sh).
+  CENV=(-e GIT_CONFIG_COUNT=3 -e "GIT_CONFIG_KEY_0=url.ssh://$USER@$H$HIVE_REPOS_DIR/.insteadOf"
         -e "GIT_CONFIG_VALUE_0=$HIVE_REPOS_DIR/" -e GIT_CONFIG_KEY_1=safe.directory -e 'GIT_CONFIG_VALUE_1=*'
+        -e "GIT_CONFIG_KEY_2=url.ssh://$USER@$H$HIVE_REPOS_DIR/.insteadOf" -e "GIT_CONFIG_VALUE_2=file://$HIVE_REPOS_DIR/"
         -e "GIT_AUTHOR_NAME=$ACTOR" -e "GIT_AUTHOR_EMAIL=$ACTOR@1-hive.invalid"
         -e "GIT_COMMITTER_NAME=$ACTOR" -e "GIT_COMMITTER_EMAIL=$ACTOR@1-hive.invalid")
   for kv in "${GWENV[@]}"; do CENV+=(-e "$kv"); done
