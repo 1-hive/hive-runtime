@@ -301,6 +301,7 @@ fi
   printf '%s\n' "$DEC" | jq -c '{decision, wait_until, reasons: [.reasons[] | .rule + ": " + .note], rejected}' >&2
   exit 3; }
 HARNESS=$(jq -r .harness <<<"$DEC") MODEL=$(jq -r .model <<<"$DEC") EFFORT=$(jq -r '.effort // empty' <<<"$DEC")
+AGENT_MODEL=$MODEL   # the model itself, before a via_gateway route swaps MODEL for its alias (record A7, below)
 echo "route: $(jq -r '"\(.route_id) (\(.model)\(if .effort then ", " + .effort else "" end)), tier \(.tier), mode \(.mode)"' <<<"$DEC")"
 jq -c '{attempt, route_id, tier, pool}' <<<"$DEC" >> "$HIST"
 
@@ -383,10 +384,15 @@ KICK
   echo "subagents: $(jq -r '[.subagents[].route_id] | join(", ")' <<<"$DEC")"
 fi
 
+# Record A7 (hive-record 1.5.1): `hive emit` names the model that wrote a question, report, result or review, from
+# the attempt's Claude Code stream-json log (the message that ran it), else the model the harness was started with.
+MODELENV=(HIVE_MODEL="$AGENT_MODEL")
+case "$HARNESS" in claude-code*) MODELENV+=(HIVE_MODEL_STREAM="$OUT") ;; esac
 cat > "$DIR/hive.env" <<EOF
 export HIVE_URL=http://$H:$HP HIVE_ID=$HIVE_ID HIVE_KEY_FILE=$KEY HIVE_VIA=$HARNESS:$ACTOR
 export HIVEPIN_REPOSITORY_REGISTRY_PATH=$DIR/registry.json
 export PATH=$LOCAL_BIN:\$PATH
+export $(printf '%q ' "${MODELENV[@]}")
 EOF
 
 # ---- launch ---------------------------------------------------------------------------
@@ -413,7 +419,7 @@ if [ "$(jq -r '.via_gateway // false' <<<"$DEC")" = true ]; then
 fi
 ALLOWLIST=$HIVE_DEPLOY_DIR/review-allowlist.json
 if [ "$RUNTIME" = host ]; then
-  RUN=(env "${GWENV[@]}" "${CAP[@]}")
+  RUN=(env "${GWENV[@]}" "${MODELENV[@]}" "${CAP[@]}")
   WSDIR=(--add-dir "$HIVE_WORKSPACE_REPO")   # codex: the workspace remote
 else
   A=$HIVE_CONFIG_DIR/agents
@@ -463,7 +469,7 @@ else
         -e "GIT_CONFIG_KEY_2=url.ssh://$USER@$H$HIVE_REPOS_DIR/.insteadOf" -e "GIT_CONFIG_VALUE_2=file://$HIVE_REPOS_DIR/"
         -e "GIT_AUTHOR_NAME=$ACTOR" -e "GIT_AUTHOR_EMAIL=$ACTOR@1-hive.invalid"
         -e "GIT_COMMITTER_NAME=$ACTOR" -e "GIT_COMMITTER_EMAIL=$ACTOR@1-hive.invalid")
-  for kv in "${GWENV[@]}"; do CENV+=(-e "$kv"); done
+  for kv in "${GWENV[@]}" "${MODELENV[@]}"; do CENV+=(-e "$kv"); done
   CRED=()
   case "$HARNESS" in
     claude-code*)
