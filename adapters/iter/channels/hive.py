@@ -270,10 +270,12 @@ class Hive:
             return None
         return next((e["event_id"] for e in reversed(evs) if e["type"] in types), None)
 
-    def emit(self, etype, task, data=None, refs=(), cause=None):
+    def emit(self, etype, task, data=None, refs=(), cause=None, model=None):
         args = ["emit", etype, "--task", task]
         if cause:
             args += ["--cause-event", cause]
+        if model and self.takes_model_flag():
+            args += ["--model", model]   # record A7: the model that wrote it (hive-record 1.5.1's hive emit)
         if data is not None:
             args += ["--data", json.dumps(data)]
         for rel, pin in refs:
@@ -283,6 +285,15 @@ class Hive:
             return json.loads(out)
         except ValueError:
             raise Failed(out.strip()[-400:])
+
+    def takes_model_flag(self):
+        """Whether this hive CLI has `emit --model` (hive-record 1.5.1); an older one would refuse the flag."""
+        if not hasattr(self, "_model_flag"):
+            try:
+                self._model_flag = "--model" in self.run(self.c.get("hive_bin", "hive"), "emit", "--help", check=False)
+            except Exception:
+                self._model_flag = False
+        return self._model_flag
 
     def pin(self, repository, commit, path=None, name="pin"):
         f = RUN / "pins" / f"{name}-{time.time_ns()}.json"
@@ -580,10 +591,99 @@ def short_question(text: str, n: int = 500) -> str:
     return head[:i if i > n // 2 else n - 2].rstrip() + " …"
 
 
+# ---- record A7: which model wrote an action --------------------------------------------------------
+MODEL_TAG = re.compile(r"^\[([\w.:@/+-]{1,100})\]\n")   # Iter's own "[model]" line over what a send carries
+MODEL_SLACK = 5                                            # seconds: a queue file's name is taken just after the call
+
+
+def action_model(h, req, text):
+    """(the model that wrote this action, its text): the queued request's "model"; for Iter's send(), the "[model]"
+    line Iter put over it (taken off the report); else the agent's model at the moment it queued the action, from
+    its route hook (Iter) or its OpenClaw session database. None when nothing says: never a guess."""
+    if req.get("model"):
+        return str(req["model"])[:100], text
+    m = MODEL_TAG.match(text)
+    if m and req.get("via") == "send":
+        return m.group(1), text[m.end():].strip()
+    at = req.get("queued_at")
+    if not at:
+        return None, text
+    b = h.c.get("beacon") or {}
+    hook = Path(b["route_hook"]) if b.get("route_hook") else ROOT / "route-hook.jsonl"
+    found = hook_model(hook, at) if hook.is_file() else None
+    for db in [b.get("openclaw_db")] + [w for w in b.get("watch", []) if str(w).endswith(".sqlite")]:
+        if not found and db:
+            found = openclaw_model(db, at)
+    return found, text
+
+
+def _tail_lines(path, size=262144):
+    with open(path, "rb") as f:
+        f.seek(max(0, os.path.getsize(path) - size))
+        return f.read().decode("utf-8", "replace").splitlines()
+
+
+def hook_model(hook, at):
+    """The model of the route-hook episode open when the action was queued: the newest "routed" at or before `at`,
+    if that episode hadn't "ended" by then. hive-route logs a "routed" for each call it routes, a fallback's too."""
+    try:
+        lines = _tail_lines(hook)
+    except OSError:
+        return None
+    ended = set()
+    for line in reversed(lines):
+        try:
+            e = json.loads(line)
+            t = datetime.datetime.fromisoformat(str(e["at"]).replace("Z", "+00:00")).timestamp()
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if t > at + MODEL_SLACK:
+            continue
+        if e.get("event") == "ended":
+            ended.add(e.get("episode"))
+        elif e.get("event") == "routed" and e.get("model"):
+            return None if e.get("episode") in ended else str(e["model"])[:100]
+    return None
+
+
+def openclaw_model(db, at, window=1800):
+    """The model of the newest assistant message in an OpenClaw agent's session database written at or before `at`
+    (within `window` seconds): the turn that ran hive-task. response_model, the model the provider says answered,
+    else the one asked for. Read-only; None when it can't be read."""
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        newest = con.execute("select max(created_at) from transcript_events").fetchone()[0]
+        scale = 1000 if isinstance(newest, (int, float)) and newest > 1e11 else 1
+        rows = con.execute("select event_json, event_zstd from transcript_events where created_at >= ? and "
+                           "created_at <= ? order by created_at desc limit 200",
+                           ((at - window) * scale, (at + MODEL_SLACK) * scale)).fetchall()
+        con.close()
+    except Exception:
+        return None
+    for ej, blob in rows:
+        if ej is None and blob:
+            try:
+                ej = subprocess.run(["zstd", "-dcq"], input=blob, capture_output=True, check=True,
+                                    timeout=30).stdout.decode("utf-8", "replace")
+            except (OSError, subprocess.SubprocessError):
+                continue
+        if not ej or '"assistant"' not in ej:
+            continue
+        try:
+            m = json.loads(ej).get("message") or {}
+        except ValueError:
+            continue
+        if m.get("role") == "assistant" and (m.get("response_model") or m.get("model")):
+            return str(m.get("response_model") or m.get("model"))[:100]
+    return None
+
+
 def do(h, req):
     """One queued action. Returns the line the agent sees."""
     st = h.state()
     action, text = req["action"], (req.get("text") or "").strip()
+    model, text = action_model(h, req, text)
     if action == "propose":
         return propose(h, st, text, (req.get("extra") or "").strip())
     t = find_task(h, st, req.get("task", ""))
@@ -602,7 +702,7 @@ def do(h, req):
     if action in ("progress", "checkpoint"):
         if not text:
             raise Failed("a report needs text")
-        e = h.emit("task.reported", tid, {"kind": action}, [("report", h.report(t, action, text))])
+        e = h.emit("task.reported", tid, {"kind": action}, [("report", h.report(t, action, text))], model=model)
         return f"{action} report on {tid} at position {e['position']}"
     if action == "block":
         needs = req.get("extra") or "decision"
@@ -611,7 +711,7 @@ def do(h, req):
         if not text:
             raise Failed("a question needs text")
         q = h.report(t, "question", text)
-        e = h.emit("task.blocked", tid, {"needs": needs, "reason": short_question(text)}, [("question", q)])
+        e = h.emit("task.blocked", tid, {"needs": needs, "reason": short_question(text)}, [("question", q)], model=model)
         return f"{tid} is blocked (needs {needs}) at position {e['position']}; you'll get the answer here"
     if action == "unblock":
         e = h.emit("task.unblocked", tid, cause=h.last_event(tid, "task.answered"))
@@ -636,7 +736,8 @@ def do(h, req):
                 raise Failed(f"push {r} first: its HEAD {head[:12]} is on no remote branch")
             refs += [("code", h.pin(r, head, name="code")), ("base", h.pin(r, base[r], name="base"))]
         e = h.emit("task.result_posted", tid, None, [("result", h.report(t, "result", text))] + refs,
-                   cause=h.last_event(tid, "review.recorded", "task.answered", "task.assigned", "task.reassigned"))
+                   cause=h.last_event(tid, "review.recorded", "task.answered", "task.assigned", "task.reassigned"),
+                   model=model)
         _mark(tid, "result_at")
         return f"result posted on {tid} at position {e['position']}; a reviewer will look at it"
     if action == "review":
@@ -646,7 +747,7 @@ def do(h, req):
         if t.get("assigned_reviewer") != h.actor or not t.get("current_result"):
             raise Failed(f"you aren't the assigned reviewer of {tid}'s current result")
         e = h.emit("review.recorded", tid, {"verdict": verdict, "result_event": t["current_result"]["event_id"]},
-                   [("review", h.report(t, "review", text or verdict))], cause=t["current_result"]["event_id"])
+                   [("review", h.report(t, "review", text or verdict))], cause=t["current_result"]["event_id"], model=model)
         return f"review of {tid}: {verdict}, at position {e['position']}"
     raise Failed(f"unknown action {action}")
 
@@ -1073,6 +1174,7 @@ def daemon():
             try:
                 req = json.loads(path.read_text())
                 path.unlink()
+                req.setdefault("queued_at", int(path.name.split("-")[0]) / 1e9)   # the name is time_ns()-pid
             except (FileNotFoundError, ValueError):
                 continue
             # hive-task waits on the inbox for its outcome; delivering it as a new turn would leave it waiting
