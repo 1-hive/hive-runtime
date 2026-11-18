@@ -396,7 +396,8 @@ def main():
         assert json.loads(hive("cos", "task", "t3"))["task"]["status"] == "in_progress"
         print("  hive-task in sidecar mode: inbox from the sidecar, accept queued and answered, a refusal reported")
         fake = tmp / "fake-review.py"
-        fake.write_text("import sys, pathlib; k = open(sys.argv[1]).read()\nprint('Reviewed:', k.splitlines()[0])\n"
+        fake.write_text("import sys, pathlib; k = open(sys.argv[1]).read()\nprint('[[model: claude-fable-5-1]]')\n"
+                        "print('Reviewed:', k.splitlines()[0])\n"
                         f"'tests are not needed' in k and 'Which line?' in k and pathlib.Path({str(tmp / 'qa-seen')!r}).write_text('y')\n"
                         f"'Set up a venv with uv.' in k and pathlib.Path({str(tmp / 'notes-seen')!r}).write_text('y')\n"
                         "print('base..code named:', 'base ' in k)\n"
@@ -423,6 +424,7 @@ def main():
         assert t2["latest_review"]["verdict"] == "passed", t2.get("latest_review")
         rev = [json.loads(l) for l in hive("cos", "events").splitlines() if '"review.recorded"' in l and '"t2"' in l][-1]
         assert rev.get("cause") == {"event": cr2["event_id"]}, rev.get("cause")
+        assert (rev["data"].get("ext") or {}).get("model") == "claude-fable-5-1", rev["data"]   # record A7
         assert (tmp / "clones" / "code" / ".git").is_dir(), "the reviewer clones a repository it has no clone of"
         assert (tmp / "notes-seen").is_file(), "the hive's review notes are in the kickoff"
         assert (tmp / "qa-seen").is_file(), "the worker's questions and their answers are in the kickoff"

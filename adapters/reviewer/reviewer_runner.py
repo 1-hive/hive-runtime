@@ -15,7 +15,10 @@ registry, workspace, repos), plus:
 It watches the record for results assigned to this reviewer that it hasn't judged (or that were assigned to it again
 after its review), writes a kickoff
 (the order, the result, each repository's base..code range), runs the command, and takes the verdict
-from its output: the last line that reads `VERDICT: passed|failed|needs_information`. The output is
+from its output: the last line that reads `VERDICT: passed|failed|needs_information`. The command's environment
+has CLAUDE_FAILOVER_MODEL_FILE and HIVE_REVIEW_MODEL_FILE (the same file): a command that writes the model that wrote
+the review there (hive-runtime's claude-failover.sh does), or starts its output with a line "[[model: <model>]]"
+(taken off the report), gets it recorded with the review (record A7). The output is
 the review report, committed to the workspace and recorded as review.recorded, citing the result (A5).
 A run that gives no verdict is retried later; nothing is recorded for it. So is a run whose verdict comes with
 almost nothing before it (under MIN_REVIEW characters): a verdict without its findings and checks isn't a review.
@@ -38,6 +41,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CHANNEL = HERE.parent / "iter" / "channels" / "hive.py"
 VERDICT = re.compile(r"^\s*VERDICT:\s*(passed|failed|needs_information)\s*$", re.I | re.M)
+MODEL_LINE = re.compile(r"^\s*\[\[model:\s*([^\]\s]+)\s*\]\]\s*$")   # record A7, as cos.sh chat
 # A model account out of usage, spend or credit (Claude Code, Codex, the API); as supervisor.py's CAPACITY_SIGNS
 LIMIT_SIGNS = ("out of credits", "session limit", "usage limit", "rate limit", "hit your limit", "spend limit",
                "credit balance is too low", "insufficient_quota", "quota exceeded", "exceeded your current quota")
@@ -187,8 +191,13 @@ def main():
                 cmd = [kf.read_text() if a == "{text}" else str(kf) if a == "{kickoff}" else a for a in c["review_cmd"]]
                 mod.log(f"reviewing {t['id']} ({cr['event_id'][:8]})")
                 doing["reviewing"] = {"task": t["id"], "since": time.time()}
+                # Record A7: the command may write the model that wrote the review here (claude-failover.sh does,
+                # as CLAUDE_FAILOVER_MODEL_FILE); nothing written, no model.
+                mf = mod.RUN / "review-model"
+                mf.unlink(missing_ok=True)
+                env = {**os.environ, "CLAUDE_FAILOVER_MODEL_FILE": str(mf), "HIVE_REVIEW_MODEL_FILE": str(mf)}
                 try:
-                    r = subprocess.run(cmd, cwd=h.ws["clone"], capture_output=True, text=True, timeout=timeout)
+                    r = subprocess.run(cmd, cwd=h.ws["clone"], capture_output=True, text=True, timeout=timeout, env=env)
                     out = (r.stdout or "") + (("\n" + r.stderr) if r.returncode else "")
                 except subprocess.TimeoutExpired:
                     mod.log(f"review of {t['id']} timed out after {timeout}s")
@@ -199,6 +208,11 @@ def main():
                     doing.update(reviewing=None, problem=f"can't run the review command: {e}"[:200])
                     continue
                 doing["reviewing"] = None
+                model = mf.read_text().strip()[:100] if mf.is_file() else ""
+                first, _, rest = out.partition("\n")
+                hm = MODEL_LINE.match(first)
+                if hm:   # a command under another user (sudo drops the environment) says it on its first line
+                    model, out = model or hm.group(1)[:100], rest
                 m = VERDICT.findall(out)
                 if not m:
                     mod.log(f"review of {t['id']}: no verdict in the output (rc {r.returncode}); retry in {retry}s")
@@ -218,7 +232,8 @@ def main():
                 doing["problem"] = None
                 verdict = m[-1].lower()
                 try:
-                    mod.log("recorded: " + mod.do(h, {"action": "review", "task": t["id"], "text": out.strip(), "extra": verdict}))
+                    mod.log("recorded: " + mod.do(h, {"action": "review", "task": t["id"], "text": out.strip(), "extra": verdict,
+                                                       "model": model or None}))
                 except mod.Failed as e:
                     mod.log(f"recording the review of {t['id']} failed: {e}")
         except Exception as e:   # keep running through record or network errors
