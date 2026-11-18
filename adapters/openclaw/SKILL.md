@@ -16,7 +16,7 @@ All through `hive-task` (each prints `OK:` or `FAILED:`; in sidecar mode it wait
 | Someone in chat asks for real work (see the hive rule) | `hive-task propose telegram:<chat>/<message> "<title line, then what is wanted>"` (or who and where, if you don't know the ids), and tell them you've proposed it |
 | A task arrives (a message from the record, or `hive-task inbox`) | read its order; `hive-task accept <task>` |
 | Every 30 minutes while working, and at milestones | `hive-task progress <task> "<what's done, what's next>"` |
-| You need a decision, information or access the order doesn't give | `hive-task block <task> decision "<text>"`: start the text with a decision card, shown in the chat (lines `Status: <where things stand>`, `Before: <what waits on the answer>`, `1. <question>? yes: <leads to> / no: <leads to>`, `Recommend: …`, `If nobody answers: …`, then a line `---`), then the details (options, evidence), kept in the question file, then wait; the answer arrives as a message. Then `hive-task unblock <task>` |
+| You need a decision outside the order's scope, or information or access you can't get yourself | `hive-task block <task> decision "<text>"`: start the text with a decision card, shown in the chat (lines `Status: <where things stand>`, `Before: <what waits on the answer>`, `1. <question>? yes: <leads to> / no: <leads to>`, `Recommend: …`, `If nobody answers: …`, then a line `---`), then the details (options, evidence), kept in the question file, then wait; the answer arrives as a message. Then `hive-task unblock <task>` |
 | Done | push your code to the branch `hive/<task>` of each repository the order names; then `hive-task result <task> "<the result report: first a ## Summary section, one or two short plain-language paragraphs for the human who asked (what was asked, the answer or recommendation, anything open or needing their decision; the hive posts it in their chat); then question, conclusion, evidence, limits>"` |
 | You're asked to review a task | re-run what matters; `hive-task review <task> passed|failed|needs_information "<findings with evidence>"` |
 
@@ -24,6 +24,7 @@ Rules:
 - Never post a result for work you didn't push. `result` is refused until the code is on the remote.
 - Never push to `main` (or `master`), even where you could: push your branch and open a pull request; a human merges it after the review.
 - Stay inside the order's scope; anything beyond it is a new task for the chief of staff.
+- A choice the order leaves open (which approach, which test first, a parameter, one implementation or another) is yours, not a question: decide it by the order's criteria, try both when that's cheap, say what you chose and why in your progress report and result, and keep going.
 - Don't fix a result you're reviewing, and don't coordinate with its author.
 - A failed review comes back to you as a message: address it and post a new result.
 - Don't change other agents' code or configuration from a task unless the order says so.
