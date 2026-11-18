@@ -55,10 +55,9 @@ setup() {
     if [ -s "$A/claude-oauth-token.2" ]; then
       export CLAUDE_TOKEN_FILES="$A/claude-oauth-token $A/claude-oauth-token.2" CLAUDE_FAILOVER_STATE=$D/.claude-failover
       CLAUDE_CODE_OAUTH_TOKEN=$(tr -d '[:space:]' < "$("$RUNTIME_DIR/claude-failover.sh" --pick)"); export CLAUDE_CODE_OAUTH_TOKEN
-      CLAUDE_P="$RUNTIME_DIR/claude-failover.sh --model $MODEL --permission-mode auto --mcp-config $D/mcp.json"
-    else
-      CLAUDE_P=$CLAUDE
     fi
+    # One account or two, chat goes through claude-failover.sh: it reports the model that answered (cos.sh chat).
+    CLAUDE_P="$RUNTIME_DIR/claude-failover.sh --model $MODEL --permission-mode auto --mcp-config $D/mcp.json"
     if [ -s "$A/claude.env" ]; then set -a; . "$A/claude.env"; set +a; fi
     return
   fi
@@ -127,14 +126,30 @@ case "${1:-}" in
     # Continue the chat conversation; the first message starts it. A turn is stopped
     # inside the container after 15 minutes (killing the host side leaves it running),
     # and a stopped turn isn't retried as a new conversation.
+    # The reply's first line is "[[model: <model>]]" when the call said which model wrote it (claude-result.py);
+    # the Telegram bridge shows it as "[<model>]" and `op chat` prints it as is.
     T="timeout -k 10 900"
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    ask() {   # $@: extra claude args; the reply's text on stdout, the model in $tmp/model
+      local rc=0
+      if [ "$RT" = none ]; then   # claude-failover.sh parses and writes the model
+        printf '%s' "$msg" | CLAUDE_FAILOVER_MODEL_FILE=$tmp/model "${P[@]}" $T $CLAUDE_P -p "$@" 2>/dev/null || rc=$?
+        return $rc
+      fi
+      printf '%s' "$msg" | "${P[@]}" exec -i -w /cos/chat "$NAME" $T $CLAUDE_P -p "$@" \
+        --output-format stream-json --verbose > "$tmp/raw" 2>/dev/null || rc=$?
+      python3 "$RUNTIME_DIR/claude-result.py" "$tmp/raw" --model-file "$tmp/model" || true
+      return $rc
+    }
     rc=0
-    printf '%s' "$msg" | "${P[@]}" $([ "$RT" = none ] || echo exec -i -w /cos/chat "$NAME") $T $CLAUDE_P -p --continue 2>/dev/null || rc=$?
+    ask --continue > "$tmp/reply" || rc=$?
     if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
-      echo "(stopped after 15 minutes without a reply)"
+      rm -f "$tmp/model"; echo "(stopped after 15 minutes without a reply)" > "$tmp/reply"
     elif [ "$rc" != 0 ]; then
-      printf '%s' "$msg" | "${P[@]}" $([ "$RT" = none ] || echo exec -i -w /cos/chat "$NAME") $T $CLAUDE_P -p
-    fi ;;
+      rm -f "$tmp/model"; ask > "$tmp/reply" || true
+    fi
+    [ -s "$tmp/model" ] && printf '[[model: %s]]\n' "$(head -1 "$tmp/model")"
+    cat "$tmp/reply" ;;
   stop)
     [ "$RT" = none ] && exec tmux kill-session -t cos
     "${P[@]}" stop -t 10 "$NAME" ;;
