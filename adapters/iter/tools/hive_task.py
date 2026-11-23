@@ -26,8 +26,11 @@ def run(action, task, text, extra=""):
     out.mkdir(parents=True, exist_ok=True)
     name = f"{time.time_ns()}-{os.getpid()}"
     tmp = out / f".{name}.tmp"
-    tmp.write_text(json.dumps({"action": action, "task": (task or "").strip(), "text": text or "",
-                               "extra": (extra or "").strip()}))
+    req = {"action": action, "task": (task or "").strip(), "text": text or "", "extra": (extra or "").strip()}
+    model = os.environ.get("ITER_SERVED_MODEL", "").strip()   # the model that wrote this call (Iter, note_served)
+    if model:
+        req["model"] = model[:100]
+    tmp.write_text(json.dumps(req))
     tmp.replace(out / name)
     what = "a proposal" if action == "propose" else (task or "(your open task)")
     return f"QUEUED: {action} {what}; the outcome arrives on the hive channel"

@@ -106,7 +106,11 @@ def receive():
 def send(content):
     if not ensure_daemon():
         raise RuntimeError(f"hive channel not configured: no {CONF}")
-    _put(OUTBOX, {"action": "progress", "task": "", "text": str(content), "via": "send"})
+    req = {"action": "progress", "task": "", "text": str(content), "via": "send"}
+    model = os.environ.get("ITER_SERVED_MODEL", "").strip()   # the model that wrote this send (Iter, note_served)
+    if model:
+        req["model"] = model[:100]
+    _put(OUTBOX, req)
 
 
 # ---------------------------------------------------------------- daemon ------------------------
@@ -625,7 +629,9 @@ def _tail_lines(path, size=262144):
 
 def hook_model(hook, at):
     """The model of the route-hook episode open when the action was queued: the newest "routed" at or before `at`,
-    if that episode hadn't "ended" by then. hive-route logs a "routed" for each call it routes, a fallback's too."""
+    if that episode hadn't "ended" by then and the route was applied (in read mode, "applied": false, it is only the
+    router's pick). Iter that passes ITER_SERVED_MODEL to its tools doesn't need this. hive-route logs a "routed" for
+    each call it routes, a fallback's too."""
     try:
         lines = _tail_lines(hook)
     except OSError:
@@ -642,6 +648,8 @@ def hook_model(hook, at):
         if e.get("event") == "ended":
             ended.add(e.get("episode"))
         elif e.get("event") == "routed" and e.get("model"):
+            if e.get("applied") is False:   # read mode: the router's pick, not the model that ran
+                return None
             return None if e.get("episode") in ended else str(e["model"])[:100]
     return None
 

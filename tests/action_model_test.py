@@ -8,6 +8,10 @@ assistant message in its session database. Nothing found: no model. The flag goe
 """
 import importlib.util
 import json
+import os
+import sys
+import subprocess
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -52,6 +56,30 @@ with tempfile.TemporaryDirectory() as d:
     assert ch.hook_model(hook, now - 450) is None          # e1 had ended: no episode open
     assert ch.hook_model(hook, now - 700) is None
     assert ch.action_model(H(), {"queued_at": now}, "r")[0] == "anthropic/claude-opus-5-5"   # ROOT/route-hook.jsonl
+    # read mode ("applied": false): the router's pick, not the model that ran -> nothing
+    ro = d / "route-hook-read.jsonl"
+    ro.write_text(json.dumps({"at": iso(now - 100), "event": "routed", "episode": "e4", "applied": False,
+                              "model": "anthropic/claude-opus-5-5"}) + "\n")
+    assert ch.hook_model(ro, now) is None
+
+    # Iter passes ITER_SERVED_MODEL to its tools (note_served): hive_task queues it as the request's model
+    tool_root = d / "iter"
+    (tool_root / "tools").mkdir(parents=True)
+    (tool_root / ".hive").mkdir()
+    (tool_root / ".hive" / "config.json").write_text("{}")
+    shutil.copy(ROOT / "adapters" / "iter" / "tools" / "hive_task.py", tool_root / "tools" / "hive_task.py")
+    for served, want in (("anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5"), ("", None)):
+        code = ("import importlib.util,sys;s=importlib.util.spec_from_file_location('t',sys.argv[1]);"
+                "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(m.run('progress','t1','x'))")
+        env = dict(os.environ, ITER_SERVED_MODEL=served)
+        subprocess.run([sys.executable, "-c", code, str(tool_root / "tools" / "hive_task.py")], env=env, check=True,
+                       capture_output=True)
+        out = tool_root / ".runtime" / "hive" / "outbox"
+        q = [json.loads(f.read_text()) for f in sorted(out.iterdir())]
+        assert q[-1].get("model") == want, q[-1]
+        assert ch.action_model(H(), q[-1], "x")[0] == want or (want is None and q[-1].get("model") is None)
+        for f in out.iterdir():
+            f.unlink()
 
     # an OpenClaw session database (rows in ms), newest assistant message at or before the queue time
     db = d / "openclaw-agent.sqlite"
