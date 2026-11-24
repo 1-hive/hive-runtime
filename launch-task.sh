@@ -488,13 +488,24 @@ else
         CRED=(-v "$HOME/.codex:/root/.codex")   # the operator's login, refreshed in place
       fi ;;
   esac
+  # The host's GPU, when the hive asks for it: deploy/gpu (or HIVE_TASK_GPU) names the devices, e.g.
+  # `all`, passed in through the NVIDIA container toolkit's CDI spec (`nvidia-ctk cdi generate`):
+  # device nodes, driver libraries and nvidia-smi. With no spec on the host, it launches without one.
+  GPU=(); GPUSEL=${HIVE_TASK_GPU:-$(tr -d '[:space:]' < "$HIVE_DEPLOY_DIR/gpu" 2>/dev/null)}
+  if [ -n "$GPUSEL" ] && [ "$GPUSEL" != off ]; then
+    if grep -qsE 'kind"?: *"?nvidia\.com/gpu' /etc/cdi/*.yaml /etc/cdi/*.json /var/run/cdi/*.yaml /var/run/cdi/*.json; then
+      GPU=(--device "nvidia.com/gpu=$GPUSEL")
+    else
+      echo "warning: the hive asks for the GPU ($GPUSEL) but the host has no NVIDIA CDI spec in /etc/cdi or /var/run/cdi (nvidia-ctk cdi generate): launching without it" >&2
+    fi
+  fi
   CAPC=(); [ "$ROLE" = reviewer ] && CAPC=(--timeout 5400)
   RUN=("${P[@]}" run --rm -i --name "$CNAME" --init "${CAPC[@]}"   # -i: codex reads its prompt on stdin
        # No route to the host's loopback (its Postgres, everything else): only the record, model
        # gateway and sshd, through agent-ports.py's sockets, relayed by the image's hive-entry.
        # keep-groups: the agent user's group `hive` opens the sockets' directory.
        --network slirp4netns -v "$ROOT/.ports:/run/hive-ports:ro" --group-add keep-groups
-       --device /dev/fuse --device /dev/net/tun
+       --device /dev/fuse --device /dev/net/tun "${GPU[@]}"
        # Capabilities over the container's own namespaces only (rootless: nothing beyond its user
        # on the host). Nested Podman needs them for bridge networks (netavark enters the netns it
        # creates), e.g. mtg-player's human-play sandbox (cp-1-quickstart).
