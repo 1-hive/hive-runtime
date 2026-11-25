@@ -554,7 +554,9 @@ def main() -> None:
                            f"Open the pull request: {compare_link(home, into, head)}"
                            + (f" (couldn't open it myself: {why})" if why else ""), task)
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    STATE.write_text(json.dumps(state, indent=1))
+    tmp = STATE.with_name(STATE.name + ".tmp")   # whole or not at all: a full disk once left it empty (2026-11-24)
+    tmp.write_text(json.dumps(state, indent=1))
+    tmp.replace(STATE)
 
 
 if __name__ == "__main__":

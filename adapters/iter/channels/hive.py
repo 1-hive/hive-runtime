@@ -119,6 +119,28 @@ class Failed(Exception):
     pass
 
 
+def _save(path, data, indent=None):
+    """Write a state file whole or not at all (a temporary file, then a rename). A plain write on a full disk left
+    seen.json empty, and every poll after failed on it until someone moved it aside (vm2, 2026-11-13 and 11-24)."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=indent))
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _load(path, default):
+    """A state file's JSON; `default` when it's missing, or not whole (one written before writes were whole)."""
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return default
+    except ValueError:
+        log(f"{path.name} unreadable (cut short?): starting it over")
+        return default
+
+
 def log(msg):
     with LOG.open("a") as f:
         f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}\n")
@@ -159,7 +181,7 @@ class Hive:
         self.actor = conf["actor"]
         self.ws = conf["workspace"]          # {"repository": ..., "clone": ..., "branch": ...}
         # code repository name -> the agent's clone: config's "repos", then those found earlier (find_clone)
-        found = json.loads((RUN / "repos.json").read_text()) if (RUN / "repos.json").is_file() else {}
+        found = _load(RUN / "repos.json", {})
         self.repos = {**found, **conf.get("repos", {})}
         self._reg_file, self._reg_stamp, self._reg = Path(conf["registry"]), None, None
         for name in [self.ws["repository"], *self.repos]:
@@ -199,7 +221,7 @@ class Hive:
         for name, clone in [(self.ws["repository"], self.ws["clone"]), *self.repos.items()]:
             if name in reg["repositories"]:
                 reg["repositories"][name]["local_path"] = clone
-        (RUN / "registry.json").write_text(json.dumps(reg, indent=1))
+        _save(RUN / "registry.json", reg, indent=1)
 
     def clone(self, repo):
         """The agent's clone of a registered repository: from config's "repos", or else the git folder under
@@ -213,8 +235,8 @@ class Hive:
                          f"clone {self.reg['repositories'][repo]['fetch_urls'][0]} there, or name it under \"repos\" "
                          f"in the sidecar's config")
         self.repos[repo] = hits[0]
-        found = json.loads((RUN / "repos.json").read_text()) if (RUN / "repos.json").is_file() else {}
-        (RUN / "repos.json").write_text(json.dumps({**found, repo: hits[0]}, indent=1))
+        found = _load(RUN / "repos.json", {})
+        _save(RUN / "repos.json", {**found, repo: hits[0]}, indent=1)
         self.write_registry()
         return hits[0]
 
@@ -519,13 +541,10 @@ def _norm_url(u):
 def _mark(tid, key):
     """Note a moment of the agent's work on a task (for the time split: record work versus the rest)."""
     f = TASKS / f"{tid}.json"
-    try:
-        d = json.loads(f.read_text()) if f.is_file() else {}
-    except ValueError:
-        d = {}
+    d = _load(f, {})
     d.setdefault("windows", []).append({key: time.time()})
     d[key] = time.time()
-    f.write_text(json.dumps(d))
+    _save(f, d)
 
 
 ORIGIN = re.compile(r"^telegram:-?\d+/\d+$")
@@ -704,7 +723,7 @@ def do(h, req):
                 base[r] = start_tip(h, h.clone(r), r, t)
             except Failed as e:
                 raise Failed(f"accepted, but {e}; you can't post a result for {r} until then (accept again after cloning)")
-        (TASKS / f"{tid}.json").write_text(json.dumps({"base": base, "accepted_at": time.time()}))
+        _save(TASKS / f"{tid}.json", {"base": base, "accepted_at": time.time()})
         return f"accepted {tid}" + (f"; base {', '.join(f'{r} {c[:12]} (the hive reads {h.clone(r)})' for r, c in base.items())}; "
                                     f"commit on branch hive/{tid} there" if base else "")
     if action in ("progress", "checkpoint"):
@@ -728,9 +747,7 @@ def do(h, req):
         if not text:
             raise Failed("a result needs its report text")
         refs, base = [], {}
-        f = TASKS / f"{tid}.json"
-        if f.is_file():
-            base = json.loads(f.read_text()).get("base", {})
+        base = _load(TASKS / f"{tid}.json", {}).get("base", {})
         for r in (t.get("ext") or {}).get("repos") or []:
             clone, head = h.work(r, tid)
             base[r] = base_for(h, clone, head, base.get(r), start_tip(h, clone, r, t))   # none recorded: the clone came later
@@ -764,8 +781,9 @@ def poll(h):
     """Turn what changed on the record into messages for the agent. The first poll after the channel
     starts reports everything still waiting on the agent; later ones, only what changed."""
     st = h.state()
-    seen = json.loads(SEEN.read_text()) if SEEN.is_file() else {}
-    first = not SEEN.is_file()
+    seen = _load(SEEN, None)      # missing or cut short: a first poll, which reports all the agent's open work
+    first = seen is None
+    seen = seen or {}
     for t in sorted(st["tasks"].values(), key=lambda t: t["id"]):
         tid, prev, now = t["id"], seen.get(t["id"], {}), {}
         if t.get("owner") == h.actor:
@@ -822,7 +840,7 @@ def poll(h):
                  f"Report what you're doing with hive_task(action='progress', task='{e['task']}', text='...', extra=''), "
                  f"or block with a question if you're stuck.")
     seen["_nudges"] = max([e["position"] for e in evs], default=nudged_after or 0)
-    SEEN.write_text(json.dumps(seen))
+    _save(SEEN, seen)
     if first:
         mine = [t["id"] for t in st["tasks"].values()
                 if t.get("owner") == h.actor and t["status"] in ("assigned", "in_progress", "blocked")]
