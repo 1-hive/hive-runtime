@@ -84,6 +84,13 @@ MAX_CHECKPOINTS = 3  # routing checkpoints per task
 # no process to watch, nothing to relaunch. The ladder is nudge, nudge, escalate to the chief of staff, who
 # reassigns. An owner the Floor shows can't run gets no nudges and one escalation, until it is active again. A result they must review that waits longer than HIVE_REVIEW_WAIT_SECONDS is escalated too.
 LONG_LIVED = [p.strip() for p in os.environ.get("HIVE_LONG_LIVED_ACTORS", "").split(",") if p.strip()]
+# A silent owner's task, once escalated and left with it, is escalated again every check-in window only while the
+# Floor shows the owner's model running (it is spending tokens without reporting on the task, so it should be loud).
+# Otherwise only this long after, while the same silence lasts (from its last activity or its assignment): on
+# 2026-11-26 the pop-os bots' gateway was down and five of their tasks were escalated every 30 min, 113 times in
+# 10 h, each a chief-of-staff turn and a message to the operator saying the same thing, with nothing being spent.
+# A Floor that doesn't answer, or has no data for the owner, keeps the check-in window (it might be spending).
+STUCK_REMIND_S = float(os.environ.get("HIVE_STUCK_REMIND_HOURS", "12") or 12) * 3600
 REVIEW_WAIT_S = int(os.environ.get("HIVE_REVIEW_WAIT_SECONDS", 7200))
 # A long-lived reviewer reviews one result at a time, so a result can wait in its queue for hours. The wait is
 # counted from when the reviewer starts that result, as the Floor shows it (hive-bridge, HIVE_FLOOR_URL, its beacons):
@@ -188,11 +195,17 @@ def supervise_long_lived(t: dict, now: float, dry: bool) -> None:
                                                  f"(limit {limit // 60} min); report or ask"}, dry=dry)
         return
     hist = json.loads(hive("task", task))["events"]
-    if now - last_escalation(hist) <= limit:     # escalated or resolved within the check-in window: wait
+    last, spend = last_escalation(hist), spending(t.get("owner"))
+    # escalated or resolved within the check-in window: wait; already escalated in this silence and left with the
+    # owner, whose model isn't running: wait STUCK_REMIND_S (a reassignment or the owner's activity starts a new
+    # silence, and the ladder again)
+    if now - last <= (max(limit, STUCK_REMIND_S) if last >= since and spend is False else limit):
         return
+    running = (f"; the Floor shows its model running ({spend}), so it is spending tokens without reporting on this "
+               "task") if spend else ""
     emit("task.escalated", task, {"to": "chief_of_staff", "code": "stuck",
-                                  "reason": f"{what} for {int((now - since) / 60)} min after {nudges} nudges; "
-                                            f"{t.get('owner')} may need reassigning"}, dry=dry)
+                                  "reason": (f"{what} for {int((now - since) / 60)} min after {nudges} nudges; "
+                                             f"{t.get('owner')} may need reassigning{running}")[:REASON_MAX]}, dry=dry)
 
 
 def read_floor() -> None:
@@ -213,6 +226,15 @@ def reviewing(actor: str) -> tuple[str, float | None] | None:
     m = re.match(r"^Reviewing (\S+)$", st.get("headline") or "")
     task = st.get("task") or (m.group(1) if m else None)
     return (task, st.get("since")) if task else None
+
+
+def spending(actor: str | None) -> str | bool | None:
+    """The Floor's headline when it shows the agent's model running now (spending tokens), False when it shows it
+    not running, None when the Floor didn't answer or has no activity data for it."""
+    st = FLOOR_NOW.get(actor or "")
+    if not st or st.get("state") == "nodata":
+        return None
+    return (st.get("headline") or "active") if st.get("active") else False
 
 
 def cant_run(actor: str | None) -> str | None:

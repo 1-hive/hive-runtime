@@ -93,6 +93,30 @@ EVENTS["t1"] = [{"type": "task.nudged", "recorded_at": iso(NOW - 1000)}, {"type"
 t.update(status="assigned", assigned_at=iso(NOW - 2000)); t["ext"]["nudges_since_activity"] = 2; emitted.clear()
 sup.supervise(t, NOW, False)
 check("stuck, resolved without a reassignment: wait a check-in window", not emitted, emitted)
+# the same silence, the escalation left with the owner, its model not running: not again every check-in window
+# (2026-11-26: 113 escalations of five tasks in 10 h while the pop-os gateway was down), only STUCK_REMIND_S later
+t["assigned_at"] = iso(NOW - 30 * 3600)
+ESC_LEFT = [{"type": "task.nudged", "recorded_at": iso(NOW - 29 * 3600)}, {"type": "task.escalated", "recorded_at": iso(NOW - 3000)},
+            {"type": "task.escalation_resolved", "recorded_at": iso(NOW - 2900)}]
+EVENTS["t1"] = ESC_LEFT
+sup.FLOOR_NOW["worker.protomegabot2"] = {"state": "idle", "headline": "Idle for 9h 02m", "active": False}
+for k in range(20): sup.supervise(t, NOW + k * 1800, False)
+check("model not running, escalation left with the owner: none for 10 h", not emitted, emitted)
+sup.supervise(t, NOW + sup.STUCK_REMIND_S, False)
+check("... then one reminder escalation, STUCK_REMIND_S after", len(emitted) == 1 and emitted[0][0] == "task.escalated"
+      and emitted[0][2]["code"] == "stuck" and "spending" not in emitted[0][2]["reason"], emitted)
+emitted.clear(); sup.FLOOR_NOW["worker.protomegabot2"] = {"state": "own", "headline": "Active, not on a chat or a task", "active": True}
+sup.supervise(t, NOW, False)
+check("model running (spending tokens) without reporting: escalated every check-in window, loud, saying so",
+      len(emitted) == 1 and "spending tokens" in emitted[0][2]["reason"] and "Active, not on a chat" in emitted[0][2]["reason"], emitted)
+emitted.clear(); sup.FLOOR_NOW.clear(); sup.supervise(t, NOW, False)
+check("no Floor: the check-in window, as before (it might be spending)", len(emitted) == 1 and emitted[0][0] == "task.escalated", emitted)
+emitted.clear(); sup.FLOOR_NOW["worker.protomegabot2"] = {"state": "idle", "active": False}; t["assigned_at"] = iso(NOW - 2000)
+EVENTS["t1"] = [{"type": "task.escalated", "recorded_at": iso(NOW - 4000)}, {"type": "task.escalation_resolved", "recorded_at": iso(NOW - 3900)}]
+sup.supervise(t, NOW, False)
+check("reassigned after the escalation, silent again past the window: escalated (a new silence)",
+      emitted and emitted[-1][0] == "task.escalated", emitted)
+emitted.clear(); sup.FLOOR_NOW.clear()
 # an owner the Floor shows can't run: no nudges, one escalation that says why, then quiet (11-09: M0 escalated
 # seven times, every 30 min, while ProtoMegaBot2's model account was at its spend limit)
 lim = "its model account hit a usage limit: This request would exceed your account's monthly spend limit."
